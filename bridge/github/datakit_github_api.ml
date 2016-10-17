@@ -1,6 +1,6 @@
 (* Implement API with direct GitHub API calls. *)
 
-open Datakit_github
+open Datakit_github_types
 open Github_t
 open Astring
 
@@ -345,4 +345,30 @@ module Webhook = struct
 
   let watch t r = watch t ~events:default_events (of_repo r)
 
+end
+
+module type S = sig
+  type token
+  type 'a result = ('a, string) Result.result Lwt.t
+  val user_exists: token -> user:string -> bool result
+  val repo_exists: token -> Repo.t -> bool result
+  val repos: token -> user:string -> Repo.t list result
+  val status: token -> Commit.t -> Status.t list result
+  val set_status: token -> Status.t -> unit result
+  val set_ref: token -> Ref.t -> unit result
+  val remove_ref: token -> Repo.t -> string list -> unit result
+  val set_pr: token -> PR.t -> unit result
+  val prs: token -> Repo.t -> PR.t list result
+  val refs: token -> Repo.t -> Ref.t list result
+  val events: token -> Repo.t -> Event.t list result
+  module Webhook: sig
+    type t
+    val create: token -> Uri.t -> t
+    val run: t -> unit Lwt.t
+    val repos: t -> Repo.Set.t
+    val watch: t -> Repo.t -> unit Lwt.t
+    val events: t -> Event.t list
+    val wait: t -> unit Lwt.t
+    val clear: t -> unit
+  end
 end
