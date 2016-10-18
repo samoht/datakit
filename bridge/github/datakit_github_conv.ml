@@ -1,6 +1,6 @@
 open Lwt.Infix
 open Datakit_path.Infix
-open Datakit_github_types
+open Datakit_github
 
 let src = Logs.Src.create "dkt-github" ~doc:"Github to Git bridge"
 module Log = (val Logs.src_log src : Logs.LOG)

@@ -1,4 +1,4 @@
-open Datakit_github_types
+open Datakit_github
 
 module Diff: sig
 
