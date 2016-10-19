@@ -51,7 +51,7 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
       | None   -> None
       | Some o -> Some o.datakit
     in
-    Conv.create ~debug ?old br >|= fun (tr, datakit) ->
+    Conv.of_branch ~debug ?old br >|= fun (tr, datakit) ->
     tr, { datakit; bridge }
 
   let safe_abort tr =

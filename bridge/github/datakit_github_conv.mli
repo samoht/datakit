@@ -38,9 +38,14 @@ module Make (DK: Datakit_S.CLIENT): sig
   type nonrec 'a result = ('a, DK.error) Result.result Lwt.t
   (** The type for conversion results. *)
 
+  (** The type for trees. *)
+  type tree =
+    | Tree: DK.Tree.t -> tree
+    | Transaction: DK.Transaction.t -> tree
+
   (** {1 Repositories} *)
 
-  val repos: DK.Transaction.t -> Repo.Set.t Lwt.t
+  val repos: tree -> Repo.Set.t Lwt.t
   (** [repos t] is the list of repositories stored in [t]. *)
 
   val update_repo: DK.Transaction.t -> Repo.state -> Repo.t -> unit result
@@ -50,13 +55,12 @@ module Make (DK: Datakit_S.CLIENT): sig
 
   (** {1 Status} *)
 
-  val status:
-    DK.Transaction.t -> Commit.t -> string list -> Status.t option Lwt.t
-  (** [status t c s] is the commit's build status [s] for the commit
-      [c] in the transaction [t]. *)
+  val status: tree -> Commit.t -> string list -> Status.t option Lwt.t
+  (** [status t c s] is the commit's build statuses [s] for the commit
+      [c] in the tree [t]. *)
 
-  val statuses: ?commits:Commit.Set.t -> DK.Transaction.t -> Status.Set.t Lwt.t
-  (** [statuses t] is the list of status stored in [t].. *)
+  val statuses: ?commits:Commit.Set.t -> tree -> Status.Set.t Lwt.t
+  (** [statuses t] is the list of status stored in [t]. *)
 
   val update_status: DK.Transaction.t -> Status.t -> unit result
   (** [update_status t s] applies the status [s] to the transaction
@@ -64,11 +68,11 @@ module Make (DK: Datakit_S.CLIENT): sig
 
   (** {1 Pull requests} *)
 
-  val pr: DK.Transaction.t -> Repo.t -> int -> PR.t option Lwt.t
+  val pr: tree -> Repo.t -> int -> PR.t option Lwt.t
   (** [pr t r n] is the [n]'th pull-request of the repostiry [r] in
       [t]. *)
 
-  val prs: ?repos:Repo.Set.t -> DK.Transaction.t -> PR.Set.t Lwt.t
+  val prs: ?repos:Repo.Set.t -> tree -> PR.Set.t Lwt.t
   (** [prs t] is the list of pull requests stored in [t]. *)
 
   val update_pr: DK.Transaction.t -> PR.t -> unit result
@@ -76,6 +80,9 @@ module Make (DK: Datakit_S.CLIENT): sig
       transaction [t]. *)
 
   (** {1 Git References} *)
+
+  val refs: ?repos:Repo.Set.t -> tree -> Ref.Set.t Lwt.t
+  (** [refs t] is the list of Git references stored in [t].*)
 
   val update_ref: DK.Transaction.t -> Ref.state -> Ref.t -> unit result
   (** [update_ref t s r] applies the Git reference [r] to the
@@ -96,14 +103,21 @@ module Make (DK: Datakit_S.CLIENT): sig
   val snapshot: t -> Snapshot.t
   (** [snapshot t] is [t]'s in-memory snapshot. *)
 
+  val head: t -> DK.Commit.t
+  (** [head t] is [t]'s head. *)
+
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for {!snapshot} values. *)
 
-  val safe_diff: DK.Transaction.t -> DK.Commit.t -> Diff.Set.t Lwt.t
-  (** [diff t c] computes the Github diff between the transaction [t]
-      and the commit [c]. *)
+  type diffable = [`Transaction of DK.Transaction.t | `Commit of DK.Commit.t ]
+  (** The type for diffable values. *)
 
-  val create: debug:string -> ?old:t -> DK.Branch.t -> (DK.Transaction.t * t) Lwt.t
+  val safe_diff: diffable -> DK.Commit.t -> Diff.Set.t Lwt.t
+  (** [diff t c] computes the Github diff between the diffable object
+      [t] (either a transaction or a commit) and the commit [c]. *)
+
+  val of_branch:
+    debug:string -> ?old:t -> DK.Branch.t -> (DK.Transaction.t * t) Lwt.t
   (** [snapshot dbg ?old b] is a pair [(t, s)] where [s] is a snapshot
       of the branch [b] and a [t] is a transaction started on [s]'s
       commit. Note: this is expensive, so try to provide a (recent)
@@ -111,6 +125,10 @@ module Make (DK: Datakit_S.CLIENT): sig
       the two snapshot's commits will be computed and only the minimal
       number of filesystem access will be performed to compute the new
       snapshot by updating the old one. *)
+
+  val of_commit: debug:string -> ?old:t -> DK.Commit.t -> t Lwt.t
+  (** Same as {!of_branch} but does not allow to update the underlying
+      store. *)
 
   val apply: debug:string -> Snapshot.diff -> DK.Transaction.t -> unit result
   (** [apply d t] applies the snapshot diff [d] into the datakit

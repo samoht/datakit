@@ -86,25 +86,51 @@ module Make (DK: Datakit_S.CLIENT) = struct
     DK.Transaction.remove t path >>= function
     | Error _ | Ok () -> ok ()
 
+  type tree =
+    | Tree: DK.Tree.t -> tree
+    | Transaction: DK.Transaction.t -> tree
+
   let safe_read_dir t dir =
-    DK.Transaction.read_dir t dir >|= function
+    (match t with
+     | Tree t -> DK.Tree.read_dir t dir
+     | Transaction t -> DK.Transaction.read_dir t dir
+    ) >|= function
     | Error _ -> []
     | Ok dirs -> dirs
 
   let safe_exists_dir t dir =
-    DK.Transaction.exists_dir t dir >|= function
+    (match t with
+     | Tree t -> DK.Tree.exists_dir t dir
+     | Transaction t -> DK.Transaction.exists_dir t dir
+    ) >|= function
     | Error _ -> false
     | Ok b    -> b
 
   let safe_exists_file t file =
-    DK.Transaction.exists_file t file >|= function
+    (match t with
+     | Tree t -> DK.Tree.exists_file t file
+     | Transaction t -> DK.Transaction.exists_file t file
+    ) >|= function
     | Error _ -> false
     | Ok b    -> b
 
   let safe_read_file t file =
-    DK.Transaction.read_file t file >|= function
+    (match t with
+     | Tree t -> DK.Tree.read_file t file
+     | Transaction t -> DK.Transaction.read_file t file
+    ) >|= function
     | Error _ -> None
     | Ok b    -> Some (String.trim (Cstruct.to_string b))
+
+  type diffable = [`Transaction of DK.Transaction.t | `Commit of DK.Commit.t ]
+
+  let safe_diff t c =
+    (match t with
+     | `Commit t      -> DK.Commit.diff t c
+     | `Transaction t -> DK.Transaction.diff t c
+    )  >|= function
+    | Error _ -> Diff.Set.empty
+    | Ok d    -> Diff.changes d
 
   let walk
       (type elt) (type t) (module Set: SET with type elt = elt and type t = t)
@@ -418,11 +444,6 @@ module Make (DK: Datakit_S.CLIENT) = struct
 
   (* Diffs *)
 
-  let safe_diff t c =
-    DK.Transaction.diff t c >|= function
-    | Error _ -> Diff.Set.empty
-    | Ok d    -> Diff.changes d
-
   let combine_repo t tree r =
     repo tree r >>= function
     | None   -> Snapshot.without_repo r t |> Lwt.return
@@ -469,16 +490,15 @@ module Make (DK: Datakit_S.CLIENT) = struct
       t
 
   type t = {
-    commit  : DK.Commit.t;
+    head    : DK.Commit.t;
     snapshot: Snapshot.t;
-    branch  : DK.Branch.t;
   }
 
   let snapshot t = t.snapshot
+  let head t = t.head
 
   let pp ppf s =
-    Fmt.pf ppf "@[%s[%a]@;@[<2>%a@]@]"
-      (DK.Branch.name s.branch) DK.Commit.pp s.commit Snapshot.pp s.snapshot
+    Fmt.pf ppf "@[%a:@;@[<2>%a@]@]" DK.Commit.pp s.head Snapshot.pp s.snapshot
 
   let tr_head tr =
     DK.Transaction.parents tr >>= function
@@ -489,7 +509,7 @@ module Make (DK: Datakit_S.CLIENT) = struct
     | Ok [p]  -> Lwt.return p
     | Ok _    -> Lwt.fail_with "too many parents!"
 
-  let create ~debug ?old branch =
+  let of_branch ~debug ?old branch =
     DK.Branch.transaction branch >>= function
     | Error e ->
       Log.err
@@ -497,20 +517,30 @@ module Make (DK: Datakit_S.CLIENT) = struct
       Lwt.fail_with "snapshot"
     | Ok tr ->
       Log.debug (fun l ->
-          let c = match old with
-            | None               -> "*"
-            | Some { commit; _ } -> DK.Commit.id commit
-          in
+          let c = match old with None -> "*" | Some t -> DK.Commit.id t.head in
           l "snapshot %s old=%s" debug c
         );
-      tr_head tr >>= fun commit ->
+      tr_head tr >>= fun head ->
+      let tree = Transaction tr in
       match old with
-      | None        -> snapshot_of_tree tr >|= fun snapshot ->
-        tr, { commit; snapshot; branch }
+      | None -> snapshot_of_tree tree >|= fun snapshot -> tr, { head; snapshot }
       | Some old ->
-        safe_diff tr old.commit >>= fun diff ->
-        combine old.snapshot (tr, diff) >|= fun snapshot ->
-        tr, { commit; snapshot; branch }
+        safe_diff (`Transaction tr) old.head >>= fun diff ->
+        combine old.snapshot (tree, diff) >|= fun snapshot ->
+        tr, { head; snapshot }
+
+  let of_commit ~debug ?old head =
+    Log.debug (fun l ->
+        let c = match old with None -> "*" | Some t -> DK.Commit.id t.head in
+        l "snapshot %s old=%s" debug c
+      );
+    let tree = Tree (DK.Commit.tree head) in
+    match old with
+    | None     -> snapshot_of_tree tree >|= fun snapshot -> { head; snapshot }
+    | Some old ->
+      safe_diff (`Commit head) old.head >>= fun diff ->
+      combine old.snapshot (tree, diff) >|= fun snapshot ->
+      { head; snapshot }
 
   let remove_snapshot ~debug = function
     | None   -> ok None
