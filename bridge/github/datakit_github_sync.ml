@@ -15,12 +15,10 @@ let ok x = Lwt.return (Ok x)
 module Make (API: API) (DK: Datakit_S.CLIENT) = struct
 
   module State = Datakit_github.State(API)
-  module Conv = Datakit_github_conv.Make(DK)
+  module Conv  = Datakit_github_conv.Make(DK)
 
-  let error fmt = Fmt.kstrf (fun str -> DK.error "sync: %s" str) fmt
-
-  (*             [snapshot]      [tr]
-      [in memory Snapshot.t]  [9p/datakit endpoint]
+  (*              [bridge]     [datakit]
+      [in memory Snapshot.t] [9p/datakit endpoint]
                       |            |
       GH --events-->  |            | <--commits-- Users
                       |            |
@@ -33,54 +31,45 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
   *)
 
   type state = {
-    snapshot: Snapshot.t;    (* in-memory representation of the bridge state. *)
-    tr      : DK.Transaction.t;                (* open transaction to datakit *)
-    head    : DK.Commit.t;   (* commit where the transaction has been created *)
-    name    : string;                        (* name of the branch in datakit *)
+    bridge : Snapshot.t;     (* in-memory representation of the bridge state. *)
+    datakit: Conv.t;                                        (* datakit state. *)
   }
 
-  let pp ppf t =
-    Fmt.pf ppf "@[%a@;%a@]" DK.Commit.pp t.head Snapshot.pp t.snapshot
+  let pp_state ppf t =
+    Fmt.pf ppf "@[datakit:@;@[<2>%a@];@[bridge:@;<2>%a]@]"
+      Conv.pp t.datakit Snapshot.pp t.bridge
 
-  let tr_head tr =
-    DK.Transaction.parents tr >>*= function
-    | []  -> error "no parents!"
-    | [p] -> ok p
-    | _   -> error "too many parents!"
+  let is_open tr = DK.Transaction.closed tr = false
+  let is_closed tr = DK.Transaction.closed tr
 
-  let is_open t = DK.Transaction.closed t.tr = false
-  let is_closed t = DK.Transaction.closed t.tr
+  let create ~debug ?old br =
+    let bridge = match old with
+      | None   -> Snapshot.empty
+      | Some o -> o.bridge
+    in
+    let old = match old with
+      | None   -> None
+      | Some o -> Some o.datakit
+    in
+    Conv.create ~debug ?old br >|= fun (tr, datakit) ->
+    tr, { datakit; bridge }
 
-  let create ~debug ?old b =
-    begin
-      DK.Branch.transaction b >>*= fun tr ->
-      tr_head tr >>*= fun head ->
-      ok (tr, head)
-    end >>= function
-    | Error e ->
-      Log.err (fun l -> l "create %s: %a" debug DK.pp_error e);
-      Lwt.fail_with debug
-    | Ok (tr, head) ->
-      Conv.snapshot ~debug ?old tr >|= fun snapshot ->
-      let name = DK.Branch.name b in
-      { snapshot; tr; head; name }
+  let safe_abort tr =
+    if DK.Transaction.closed tr then Lwt.return_unit
+    else DK.Transaction.abort tr
 
-  let safe_abort t =
-    if DK.Transaction.closed t.tr then Lwt.return_unit
-    else DK.Transaction.abort t.tr
-
-  let rec safe_commit ?(retry=5) t ~message =
-    DK.Transaction.commit t.tr ~message >>= function
+  let rec safe_commit ?(retry=5) tr ~message =
+    DK.Transaction.commit tr ~message >>= function
     | Ok ()   -> Lwt.return true
     | Error e ->
-      if retry <> 0 then safe_commit ~retry:(retry-1) t ~message
+      if retry <> 0 then safe_commit ~retry:(retry-1) tr ~message
       else (
         Log.info (fun l -> l "Abort: %a" DK.pp_error e);
-        DK.Transaction.abort t.tr >|= fun () ->
+        DK.Transaction.abort tr >|= fun () ->
         false
       )
 
-  (* Create [github-metadata] if it doesn't exist. *)
+  (* Create and init [br] if it doesn't exist. *)
   let init_sync br =
     Log.debug (fun l -> l "init_sync %s" @@ DK.Branch.name br);
     let init =
@@ -109,56 +98,53 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
     events: unit -> Event.t list;
   }
 
-  let commit t snapshot =
-    let diff = Snapshot.diff snapshot t.snapshot in
+  let commit t tr =
+    let diff = Snapshot.diff t.bridge (Conv.snapshot t.datakit) in
     if Snapshot.is_diff_empty diff then
-      safe_abort t >|= fun () -> true
+      safe_abort tr >|= fun () -> true
     else
       let message = Fmt.to_to_string Snapshot.pp_diff diff in
-      safe_commit t ~message
+      safe_commit tr ~message
 
-  let sync ~token ~webhook t repos =
-    assert (is_open t);
-    let snapshot = match webhook with
-      | None                   -> Lwt.return t.snapshot
+  let sync ~token ~webhook t tr repos =
+    assert (is_open tr);
+    let bridge = match webhook with
+      | None                   -> Lwt.return t.bridge
       | Some { watch; events } ->
         State.add_webhooks token ~watch repos >>= fun () ->
-        State.import_webhook_events token ~events t.snapshot
+        State.import_webhook_events token ~events t.bridge
     in
-    snapshot >>= fun snapshot ->
-    State.import token snapshot repos >>= fun snapshot ->
-    commit t snapshot >|= fun commited ->
-    assert (is_closed t);
-    if not commited then
-      t
-    else
-      assert false
+    bridge >>= fun bridge ->
+    State.import token bridge repos >>= fun bridge ->
+    commit t tr >|= fun commited ->
+    assert (is_closed tr);
+    if not commited then t else { t with bridge }
 
   (* On startup, build the initial state by looking at the active
      repository in datakit. Import the new repositories and call the
      GitHub API with the diff between the GitHub state and datakit. *)
-  let first_sync ~token ~webhook b =
-    create ~debug:"first-sync" ?old:None b >>= fun t ->
-    Log.debug (fun l -> l "[first_sync]@;@[<2>%a@]" pp t);
-    let repos = Snapshot.repos t.snapshot in
-    if Repo.Set.is_empty repos then safe_abort t >|= fun _ -> (t, true) (* FIXME *)
-    else sync ~token ~webhook t repos >>= fun _ -> assert false
+  let first_sync ~token ~webhook br =
+    create ~debug:"first-sync" ?old:None br >>= fun (tr, t) ->
+    Log.debug (fun l -> l "[first_sync]@;@[<2>%a@]" pp_state t);
+    let repos = Snapshot.repos (Conv.snapshot t.datakit) in
+    if Repo.Set.is_empty repos then safe_abort tr >|= fun _ -> t
+    else sync ~token ~webhook t tr repos >|= fun t -> t
 
-  let sync_once ~token:_ ~webhook:_ _t = assert false
-
-  (*
   (* The main synchonisation function: it is called on every change in
-     the public or private branch. *)
-  let sync_once ~webhook ~cap ~token ~pub ~priv ~old =
-    assert (is_closed old);
-    state "sync-once" ~old:(Some old) ~pub ~priv >>*= fun t ->
-    Log.debug (fun l -> l "[sync_once]@;old:%a@;new:%a" pp old pp t);
-    call_github_api ~cap ~token ~old:old.pub.snapshot t >>*= fun t ->
-    let repos = Repo.Set.union (repos old.pub t.pub) (repos old.priv t.priv) in
-    sync ~webhook ~cap ~token ~pub ~priv t repos >>*= fun t ->
-    assert (is_closed t);
-    ok t
-*)
+     the datakit branch and when new webhook events are received. *)
+  let sync_once ~token ~webhook old br =
+    create ~debug:"sync-once" ~old br >>= fun (tr, t) ->
+    Log.debug (fun l -> l "[sync_once]@;old:%a@;new:%a" pp_state old pp_state t);
+    let datakit = Conv.snapshot t.datakit in
+    let diff = Snapshot.diff datakit t.bridge in
+    State.apply token diff >>= fun () ->
+    let repos =
+      Repo.Set.diff (Snapshot.repos datakit) (Snapshot.repos t.bridge)
+    in
+    assert (is_open tr);
+    sync ~token ~webhook t tr repos >|= fun t ->
+    assert (is_closed tr);
+    t
 
   type t = State of state | Starting
 
@@ -193,11 +179,11 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
   let run ~webhook ?switch ~token br t policy =
     let webhook, run_webhook = process_webhook webhook in
     let sync_once = function
-      | Starting -> first_sync ~token ~webhook br >|= fun (s, _) -> s
-      | State t  -> sync_once ~token ~webhook t
+      | Starting -> first_sync ~token ~webhook br
+      | State t  -> sync_once ~token ~webhook t br
     in
     match policy with
-    | `Once   -> sync_once t >|= fun _fixme -> t
+    | `Once   -> sync_once t >|= fun t -> State t
     | `Repeat ->
       let t = ref t in
       let updates = ref false in
@@ -205,7 +191,7 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
       let pp ppf = function
         | Starting -> Fmt.string ppf "<starting>"
         | State t  ->
-          let repos = Snapshot.repos t.snapshot in
+          let repos = Snapshot.repos t.bridge in
           Fmt.pf ppf "active repos: %a" Repo.Set.pp repos
       in
       let rec react () =

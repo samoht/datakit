@@ -1,3 +1,6 @@
+(** Efficient conversions between in-memory snapshots and persistent
+    datakit state. *)
+
 open Datakit_github
 
 module Diff: sig
@@ -87,21 +90,27 @@ module Make (DK: Datakit_S.CLIENT): sig
 
   (** {1 Snapshots and diffs} *)
 
+  type t
+  (** The type for filesystem snapshots. *)
+
+  val snapshot: t -> Snapshot.t
+  (** [snapshot t] is [t]'s in-memory snapshot. *)
+
+  val pp: t Fmt.t
+  (** [pp] is the pretty-printer for {!snapshot} values. *)
+
   val safe_diff: DK.Transaction.t -> DK.Commit.t -> Diff.Set.t Lwt.t
   (** [diff t c] computes the Github diff between the transaction [t]
       and the commit [c]. *)
 
-  val snapshot: debug:string ->
-    ?old:(DK.Commit.t * Snapshot.t) -> DK.Transaction.t -> Snapshot.t Lwt.t
-  (** [snapshot dbg ?old t] is a snapshot of the transaction
-      [t]. Note: this is expensive, so try to provide a previous
-      (recent) snapshot [prev] if possible. *)
-
-  val combine: Snapshot.t -> (DK.Transaction.t * Diff.Set.t) -> Snapshot.t Lwt.t
-  (** [combine s d] is the snapshot obtained by applying [d] on top of
-      [s]. [d] is a pair [t * diff] where [diff] contains the
-      pull-requests, status and other objects to consider while [t] is
-      the actual state of these objects stored in datakit. *)
+  val create: debug:string -> ?old:t -> DK.Branch.t -> (DK.Transaction.t * t) Lwt.t
+  (** [snapshot dbg ?old b] is a pair [(t, s)] where [s] is a snapshot
+      of the branch [b] and a [t] is a transaction started on [s]'s
+      commit. Note: this is expensive, so try to provide a (recent)
+      [old] snapshot if possible. In that case, the difference between
+      the two snapshot's commits will be computed and only the minimal
+      number of filesystem access will be performed to compute the new
+      snapshot by updating the old one. *)
 
   val apply: debug:string -> Snapshot.diff -> DK.Transaction.t -> unit result
   (** [apply d t] applies the snapshot diff [d] into the datakit

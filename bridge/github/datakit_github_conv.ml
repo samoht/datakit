@@ -468,17 +468,49 @@ module Make (DK: Datakit_S.CLIENT) = struct
                     Diff.Set.pp diff Snapshot.pp init Snapshot.pp t);
       t
 
-  let snapshot ~debug ?old tree =
-    Log.debug (fun l ->
-        let c = match old with None -> "*" | Some (c, _) -> DK.Commit.id c in
-        l "snapshot %s old=%s" debug c
-      );
-    match old with
-    | None        -> snapshot_of_tree tree
-    | Some (c, s) ->
-      safe_diff tree c >>= fun diff ->
-      combine s (tree, diff) >|= fun s ->
-      s
+  type t = {
+    commit  : DK.Commit.t;
+    snapshot: Snapshot.t;
+    branch  : DK.Branch.t;
+  }
+
+  let snapshot t = t.snapshot
+
+  let pp ppf s =
+    Fmt.pf ppf "@[%s[%a]@;@[<2>%a@]@]"
+      (DK.Branch.name s.branch) DK.Commit.pp s.commit Snapshot.pp s.snapshot
+
+  let tr_head tr =
+    DK.Transaction.parents tr >>= function
+    | Error e ->
+      Log.err (fun l -> l "tr_head: %a" DK.pp_error e);
+      Lwt.fail_with "tr_head"
+    | Ok  []  -> Lwt.fail_with "no parents!"
+    | Ok [p]  -> Lwt.return p
+    | Ok _    -> Lwt.fail_with "too many parents!"
+
+  let create ~debug ?old branch =
+    DK.Branch.transaction branch >>= function
+    | Error e ->
+      Log.err
+        (fun l -> l "snpshot %s: %a" (DK.Branch.name branch) DK.pp_error e);
+      Lwt.fail_with "snapshot"
+    | Ok tr ->
+      Log.debug (fun l ->
+          let c = match old with
+            | None               -> "*"
+            | Some { commit; _ } -> DK.Commit.id commit
+          in
+          l "snapshot %s old=%s" debug c
+        );
+      tr_head tr >>= fun commit ->
+      match old with
+      | None        -> snapshot_of_tree tr >|= fun snapshot ->
+        tr, { commit; snapshot; branch }
+      | Some old ->
+        safe_diff tr old.commit >>= fun diff ->
+        combine old.snapshot (tr, diff) >|= fun snapshot ->
+        tr, { commit; snapshot; branch }
 
   let remove_snapshot ~debug = function
     | None   -> ok None
