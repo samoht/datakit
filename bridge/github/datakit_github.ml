@@ -163,9 +163,9 @@ module PR = struct
 
   module Set = struct
     include Set(struct
-      type nonrec t = t
-      let pp = pp
-      let compare = compare
+        type nonrec t = t
+        let pp = pp
+        let compare = compare
       end)
     let repos t =
       fold (fun c acc -> Repo.Set.add (repo c) acc) t Repo.Set.empty
@@ -224,9 +224,9 @@ module Status = struct
 
   module Set = struct
     include Set(struct
-      type nonrec t = t
-      let pp = pp
-      let compare = compare
+        type nonrec t = t
+        let pp = pp
+        let compare = compare
       end)
     let repos t =
       fold (fun c acc -> Repo.Set.add (repo c) acc) t Repo.Set.empty
@@ -268,9 +268,9 @@ module Ref = struct
 
   module Set = struct
     include Set(struct
-      type nonrec t = t
-      let pp = pp
-      let compare = compare
+        type nonrec t = t
+        let pp = pp
+        let compare = compare
       end)
     let repos t =
       fold (fun c acc -> Repo.Set.add (repo c) acc) t Repo.Set.empty
@@ -303,11 +303,11 @@ module Event = struct
   let of_other x y = Other (x, y)
 
   let pp ppf = function
-    | Repo(s,r)-> Fmt.pf ppf "Repo: %a%a" Repo.pp_state s Repo.pp r
-    | PR pr    -> Fmt.pf ppf "PR: %a" PR.pp pr
-    | Status s -> Fmt.pf ppf "Status: %a" Status.pp s
-    | Ref(s,r) -> Fmt.pf ppf "Ref: %a%a" Ref.pp_state s Ref.pp r
-    | Other o  -> Fmt.pf ppf "Other: %s" @@ snd o
+    | Repo(s,r) -> Fmt.pf ppf "Repo: %a%a" Repo.pp_state s Repo.pp r
+    | PR pr     -> Fmt.pf ppf "PR: %a" PR.pp pr
+    | Status s  -> Fmt.pf ppf "Status: %a" Status.pp s
+    | Ref(s,r)  -> Fmt.pf ppf "Ref: %a%a" Ref.pp_state s Ref.pp r
+    | Other o   -> Fmt.pf ppf "Other: %s" @@ snd o
 
   let repo = function
     | Repo r   -> snd r
@@ -387,16 +387,21 @@ module Snapshot = struct
         Repo.Set.pp t.repos PR.Set.pp t.prs Ref.Set.pp t.refs
         Commit.Set.pp t.commits Status.Set.pp t.status
 
-  let without_repo repo t =
-    let keep f r = Repo.compare (f r) repo <> 0 in
-    let repos = Repo.Set.remove repo t.repos in
-    let prs = PR.Set.filter (keep PR.repo) t.prs in
-    let refs = Ref.Set.filter (keep Ref.repo) t.refs in
-    let commits = Commit.Set.filter (keep Commit.repo) t.commits in
-    let status = Status.Set.filter (keep Status.repo) t.status in
+  type keep = { f: 'a . ('a -> Repo.t) -> 'a -> bool }
+
+  let without_repo_f keep t =
+    let repos = Repo.Set.filter (keep.f (fun x -> x)) t.repos in
+    let prs = PR.Set.filter (keep.f PR.repo) t.prs in
+    let refs = Ref.Set.filter (keep.f Ref.repo) t.refs in
+    let commits = Commit.Set.filter (keep.f Commit.repo) t.commits in
+    let status = Status.Set.filter (keep.f Status.repo) t.status in
     { repos; prs; refs; commits; status }
 
-  let without_repos = Repo.Set.fold without_repo
+  let without_repo repo =
+    without_repo_f { f = fun f r -> Repo.compare (f r) repo <> 0 }
+
+  let without_repos repos =
+    without_repo_f { f = fun f r -> not (Repo.Set.mem (f r) repos) }
 
   let with_repo r t = { t with repos = Repo.Set.add r t.repos }
   let with_repos = Repo.Set.fold with_repo
@@ -408,6 +413,9 @@ module Snapshot = struct
   let with_commit c t =
     let commits = Commit.Set.add c t.commits in
     { t with commits }
+
+  let without_commits cs t = List.fold_left (fun t c -> without_commit c t) t cs
+  let with_commits cs t = List.fold_left (fun t c -> with_commit c t) t cs
 
   let without_pr (r, id) t =
     let keep pr = r  <> PR.repo pr || id <>  pr.PR.number in
@@ -469,38 +477,6 @@ module Snapshot = struct
     update: t option;
   }
 
-  let to_update t = t.update
-  let to_remove t = t.remove
-
-  let is_diff_empty t = match t.remove, t.update with
-    | None  , None   -> true
-    | Some t, None
-    | None  , Some t -> is_empty t
-    | Some x, Some y -> is_empty x && is_empty y
-
-  let cardinal t =
-    PR.Set.cardinal t.prs
-    + Ref.Set.cardinal t.refs
-    + Status.Set.cardinal t.status
-    + Commit.Set.cardinal t.commits
-
-  let pp_diff ppf t =
-    let updates = match t.update with None -> 0 | Some t -> cardinal t in
-    let removes = match t.remove with None -> 0 | Some t -> cardinal t in
-    if updates = 0 && removes = 0 then Fmt.pf ppf "No changes!"
-    else if updates = 0 && removes = 1 then
-      Fmt.pf ppf "1 item removed@;@;@[<2>%a@]" Fmt.(option pp) t.remove
-    else if updates = 0 then
-      Fmt.pf ppf "%d items removed@;@;@[<2>%a@]" removes Fmt.(option pp) t.remove
-    else if removes = 0 && updates = 1 then
-      Fmt.pf ppf "1 item updated@;@;@[<2>%a@]" Fmt.(option pp) t.update
-    else if removes = 0 then
-      Fmt.pf ppf "%d items removed@;@;@[<2>%a@]" removes Fmt.(option pp) t.remove
-    else
-      Fmt.pf ppf "%d items modified@;@;@[Updated@;<2>%a@]@;@;\
-                  @[Removed@;<2>%a@]"
-        (updates+removes) Fmt.(option pp) t.update Fmt.(option pp) t.remove
-
   (* [prune t] is [t] with all the closed PRs pruned. *)
   let prune t =
     let status = Status.Set.index t.status Status.repo in
@@ -556,55 +532,122 @@ module Snapshot = struct
     Repo.Set.fold (fun r acc -> union acc (aux r)) t.repos empty
 
   (* Compute the diff between old_s and new_s. *)
-  let diff new_s old_s =
-    let repos = repos new_s in
-    let mk repos keep_pr keep_ref keep_status keep_commit =
-      let prs = PR.Set.filter keep_pr old_s.prs in
-      let refs = Ref.Set.filter keep_ref old_s.refs in
-      let status = Status.Set.filter keep_status old_s.status in
-      let commits = Commit.Set.filter keep_commit old_s.commits in
+  let diff x y =
+    let mk t repos keep_pr keep_ref keep_status keep_commit =
+      let prs = PR.Set.filter keep_pr t.prs in
+      let refs = Ref.Set.filter keep_ref t.refs in
+      let status = Status.Set.filter keep_status t.status in
+      let commits = Commit.Set.filter keep_commit t.commits in
       let t = { repos; prs; refs; commits; status } in
-      if compare empty t = 0 then None else Some t
+      if is_empty t then None else Some t
     in
     let remove =
-      let keep_pr x =
-        Repo.Set.mem (PR.repo x) repos
-        && not (PR.Set.exists (PR.same_id x) new_s.prs)
-      in
-      let keep_ref x =
-        Repo.Set.mem (Ref.repo x) repos
-        && not (Ref.Set.exists (Ref.same_id x) new_s.refs)
-      in
-      let keep_status x =
-        Repo.Set.mem (Status.repo x) repos
-        && not (Status.Set.exists (Status.same_id x) new_s.status)
-      in
-      let keep_commit x =
-        Repo.Set.mem (Commit.repo x) repos
-        && not (Commit.Set.exists (Commit.equal x) new_s.commits)
-      in
-      mk Repo.Set.empty keep_pr keep_ref keep_status keep_commit
+      let repos = Repo.Set.diff y.repos x.repos in
+      let keep_pr pr = not (PR.Set.exists (PR.same_id pr) x.prs) in
+      let keep_ref r = not (Ref.Set.exists (Ref.same_id r) x.refs) in
+      let keep_status s = not (Status.Set.exists (Status.same_id s) x.status) in
+      let keep_commit c = not (Commit.Set.exists (Commit.equal c) x.commits) in
+      mk y repos keep_pr keep_ref keep_status keep_commit
     in
     let update =
-      let keep_pr x =
-        Repo.Set.mem (PR.repo x) repos
-        && PR.Set.exists
-          (fun y -> PR.same_id x y && PR.compare x y <> 0) new_s.prs
+      let repos = Repo.Set.diff x.repos y.repos in
+      let keep_pr pr =
+        PR.Set.exists (fun y -> PR.same_id pr y && PR.compare pr y <> 0) y.prs
       in
-      let keep_ref x =
-        Repo.Set.mem (Ref.repo x) repos
-        && Ref.Set.exists
-          (fun y -> Ref.same_id x y && Ref.compare x y <> 0) new_s.refs
+      let keep_ref r =
+        Ref.Set.exists
+          (fun y -> Ref.same_id r y && Ref.compare r y <> 0) y.refs
       in
-      let keep_status x =
-        Repo.Set.mem (Status.repo x) repos
-        && Status.Set.exists
-          (fun y -> Status.same_id x y && Status.compare x y <> 0) new_s.status
+      let keep_status s =
+        Status.Set.exists
+          (fun y -> Status.same_id s y && Status.compare s y <> 0) y.status
       in
       let keep_commit _ = false in
-      mk repos keep_pr keep_ref keep_status keep_commit
+      mk x repos keep_pr keep_ref keep_status keep_commit
     in
     { remove; update }
+
+end
+
+module Diff = struct
+
+  open Snapshot
+
+  type t = Snapshot.diff
+  let empty = { update = None; remove = None }
+
+  let update t = t.update
+  let remove t = t.remove
+
+  let cardinal t =
+    Repo.Set.cardinal t.repos
+    + Status.Set.cardinal t.status
+    + Commit.Set.cardinal t.commits
+    + PR.Set.cardinal t.prs
+    + Ref.Set.cardinal t.refs
+
+  let compare x y =
+    let compare_opt x y = match x, y with
+      | None  , None   -> 0
+      | Some x, Some y -> Snapshot.compare x y
+      | Some _, None   -> 1
+      | None  , Some _ -> -1
+    in
+    match compare_opt x.update y.update with
+    | 0 -> compare_opt x.remove y.remove
+    | i -> i
+
+  let pp ppf t =
+    Fmt.pf ppf "@[<2>update:@;%a@]@;@[<2>remove:@;%a@]"
+      Fmt.(option Snapshot.pp) t.update Fmt.(option Snapshot.pp) t.remove
+
+  let commit_message t =
+    let updates = match t.update with None -> 0 | Some t -> cardinal t in
+    let removes = match t.remove with None -> 0 | Some t -> cardinal t in
+    if updates = 0 && removes = 0 then Fmt.strf "No changes!"
+    else if updates = 0 && removes = 1 then
+      Fmt.strf "1 item removed@;@;@[<2>%a@]" Fmt.(option Snapshot.pp) t.remove
+    else if updates = 0 then
+      Fmt.strf "%d items removed@;@;@[<2>%a@]"
+        removes Fmt.(option Snapshot.pp) t.remove
+    else if removes = 0 && updates = 1 then
+      Fmt.strf "1 item updated@;@;@[<2>%a@]" Fmt.(option Snapshot.pp) t.update
+    else if removes = 0 then
+      Fmt.strf "%d items removed@;@;@[<2>%a@]"
+        removes Fmt.(option Snapshot.pp) t.remove
+    else
+      Fmt.strf "%d items modified@;@;@[Updated@;<2>%a@]@;@;\
+                @[Removed@;<2>%a@]"
+        (updates+removes) Fmt.(option Snapshot.pp) t.update
+        Fmt.(option Snapshot.pp) t.remove
+
+  let is_empty t = match t.remove, t.update with
+    | None  , None   -> true
+    | Some t, None
+    | None  , Some t -> is_empty t
+    | Some x, Some y -> is_empty x && is_empty y
+
+  let with_update s t = match t.update with
+    | None   -> { t with update = Some s }
+    | Some x -> { t with update = Some (Snapshot.union s x) }
+
+  let with_remove s t = match t.remove with
+    | None   -> { t with remove = Some s }
+    | Some x -> { t with remove = Some (Snapshot.union s x) }
+
+  let apply d t =
+    let remove = match d.remove with
+      | None   -> Snapshot.empty
+      | Some s -> s
+    in
+    let update = match d.update with
+      | None   -> Snapshot.empty
+      | Some s -> s
+    in
+    t
+    |> Snapshot.without_repos (Snapshot.repos remove)
+    |> Snapshot.without_commits (Snapshot.commits remove)
+    |> Snapshot.without_statuses (Snapshot.statuses remove)
 
 end
 
@@ -842,8 +885,8 @@ module State (API: API) = struct
       Snapshot.create ~repos ~prs:new_prs ~refs:new_refs ~commits:new_commits
         ~status:new_status
     in
-    Log.debug (fun l ->
-         l "import_repo %a@;@[<2>new:%a@]" Repo.Set.pp repos Snapshot.pp new_t);
+    Log.debug (fun l -> l "State.import %a@;@[<2>new:%a@]"
+                  Repo.Set.pp repos Snapshot.pp new_t);
     let base = Snapshot.without_repos repos t in
     let repos = Repo.Set.union (Snapshot.repos t) repos in
     let prs = PR.Set.union (Snapshot.prs base) new_prs in
@@ -889,25 +932,25 @@ module State (API: API) = struct
   (* Read DataKit data and call the GitHub API to sync the world with
      what DataKit think it should be. *)
   let apply token diff =
-    Log.debug (fun l -> l "GithubAPI.apply@;@[%a@]" Snapshot.pp_diff diff);
+    Log.debug (fun l -> l "State.apply@;@[%a@]" Diff.pp diff);
     let prs =
       PR.Set.union
-        (match Snapshot.to_update diff with
+        (match Diff.update diff with
          | None   -> PR.Set.empty
          | Some t -> Snapshot.prs t)
-        (match Snapshot.to_remove diff with
+        (match Diff.remove diff with
          | None   -> PR.Set.empty
          | Some t -> Snapshot.prs t |> PR.Set.map PR.close)
     in
     Lwt_list.iter_p (api_set_pr token) (PR.Set.elements prs)
     >>= fun () ->
-    let closed_refs = match Snapshot.to_remove diff with
+    let closed_refs = match Diff.remove diff with
       | None   -> Ref.Set.empty
       | Some t -> Snapshot.refs t
     in
     Lwt_list.iter_p (api_remove_ref token) (Ref.Set.elements closed_refs)
     >>= fun () ->
-    let refs = match Snapshot.to_update diff with
+    let refs = match Diff.update diff with
       | None   -> Ref.Set.empty
       | Some t -> Snapshot.refs t
     in
@@ -915,7 +958,7 @@ module State (API: API) = struct
     >>= fun () ->
     (* NOTE: ideally we would also remove status, but the GitHub API doesn't
        support removing status so we just ignore *)
-    let status = match Snapshot.to_update diff with
+    let status = match Diff.update diff with
       | None   -> Status.Set.empty
       | Some t -> Snapshot.status t
     in
@@ -942,7 +985,7 @@ module State (API: API) = struct
             else Commit.Set.add (PR.commit pr) acc
           | Event.Ref (`Removed, _) -> acc
           | Event.Ref (_, r) -> Commit.Set.add (Ref.commit r) acc
-          | Event.Repo _ | Event.Status _  | Event.Other _  -> acc
+          | Event.Repo _  | Event.Status _  | Event.Other _  -> acc
         ) Commit.Set.empty events
       in
       let new_commits = Commit.Set.diff commits (Snapshot.commits t) in

@@ -3,45 +3,14 @@
 
 open Datakit_github
 
-module Diff: sig
-
-  (** {1 Github diffs} *)
-
-  type t = [
-    | `Repo of Repo.t
-    | `PR of PR.id
-    | `Commit of Commit.t
-    | `Status of Status.id
-    | `Ref of Ref.id
-    | `Unknown of Repo.t
-  ]
-  (** The type for diff identifiers. *)
-
-  val pp: t Fmt.t
-  (** [pp] is the pretty-printer for diff values. *)
-
-  val compare: t -> t -> int
-  (** [compare] is the comparison function for diff values. *)
-
-  module Set: SET with type elt = t
-  (** Set of changes. *)
-
-  val changes: Datakit_path.t Datakit_S.diff list -> Set.t
-  (** [changes d] is the set of GitHub changes carried over in the
-      filesystem changes [d]. *)
-
-end
-
 (** Conversion between GitHub and DataKit states. *)
 module Make (DK: Datakit_S.CLIENT): sig
 
   type nonrec 'a result = ('a, DK.error) Result.result Lwt.t
   (** The type for conversion results. *)
 
+  type tree = DK.Tree.t
   (** The type for trees. *)
-  type tree =
-    | Tree: DK.Tree.t -> tree
-    | Transaction: DK.Transaction.t -> tree
 
   (** {1 Repositories} *)
 
@@ -84,10 +53,13 @@ module Make (DK: Datakit_S.CLIENT): sig
   val refs: ?repos:Repo.Set.t -> tree -> Ref.Set.t Lwt.t
   (** [refs t] is the list of Git references stored in [t].*)
 
-  val update_ref: DK.Transaction.t -> Ref.state -> Ref.t -> unit result
-  (** [update_ref t s r] applies the Git reference [r] to the
-      transaction [t]. Depending on the state [s] it can either remove
-      the directory or create an [head] file. *)
+  val update_ref: DK.Transaction.t -> Ref.t -> unit result
+  (** [update_ref t r] applies the Git reference [r] to the
+      transaction [t]. *)
+
+  val remove_ref: DK.Transaction.t -> Ref.t -> unit result
+  (** [remove_ref t s r] removes the Git reference [r]'s directory
+      from the transaction [t]. *)
 
   (** {1 Events} *)
 
@@ -109,12 +81,9 @@ module Make (DK: Datakit_S.CLIENT): sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for {!snapshot} values. *)
 
-  type diffable = [`Transaction of DK.Transaction.t | `Commit of DK.Commit.t ]
-  (** The type for diffable values. *)
-
-  val safe_diff: diffable -> DK.Commit.t -> Diff.Set.t Lwt.t
-  (** [diff t c] computes the Github diff between the diffable object
-      [t] (either a transaction or a commit) and the commit [c]. *)
+  val diff: Commit.t -> t -> Diff.t Lwt.t
+  (** [diff c t] computes the Github diff between the commit [c] and
+      the snapshot [t]. *)
 
   val of_branch:
     debug:string -> ?old:t -> DK.Branch.t -> (DK.Transaction.t * t) Lwt.t
@@ -130,7 +99,7 @@ module Make (DK: Datakit_S.CLIENT): sig
   (** Same as {!of_branch} but does not allow to update the underlying
       store. *)
 
-  val apply: debug:string -> Snapshot.diff -> DK.Transaction.t -> unit result
+  val apply: debug:string -> Diff.t -> DK.Transaction.t -> unit result
   (** [apply d t] applies the snapshot diff [d] into the datakit
       transaction [t]. *)
 

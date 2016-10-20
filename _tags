@@ -49,7 +49,8 @@ true: package(bytes lwt astring logs result cstruct fmt rresult)
 <tests/*>: package(mirage-types.lwt protocol-9p.unix irmin irmin.mem camlzip)
 <tests/*>: package(git irmin.git)
 <tests/*>: package(datakit-client datakit-server.vfs datakit-server.fs9p)
-<tests/*>: package(datakit-github)
+#<tests/*>: package(datakit-github)
+<bridge/github>: include
 
 ### Painful
 

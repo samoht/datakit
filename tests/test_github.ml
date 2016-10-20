@@ -452,7 +452,6 @@ module API = struct
     let refs = List.filter (fun r -> r.Ref.name <> name) repo.R.refs in
     let () = match s with
       | `Removed -> repo.R.refs <- refs;
-      | `Created
       | `Updated -> repo.R.refs <- r :: refs;
     in
     add_event t (Event.Ref (s, r))
@@ -498,6 +497,7 @@ module API = struct
     user.User.repos |> String.Map.iter @@ fun _ repo ->
     repo.R.events |> List.iter @@ function
     | Event.Repo r   -> set_repo_aux t r
+    | Event.Commit _ -> ()
     | Event.PR pr    -> set_pr_aux t pr
     | Event.Status s -> set_status_aux t s
     | Event.Ref r    -> set_ref_aux t r
@@ -549,7 +549,7 @@ module API = struct
 
 end
 
-module VG = Datakit_github_sync.Make(API)(DK)
+module Bridge = Datakit_github_sync.Make(API)(DK)
 
 let user = "test"
 let repo = "test"
@@ -644,16 +644,34 @@ let status_state: Status_state.t Alcotest.testable =
 let snapshot: Snapshot.t Alcotest.testable =
   (module struct include Snapshot let equal x y = Snapshot.compare x y = 0 end)
 
-module Diff = Datakit_github_conv.Diff
-
-let diff: Diff.t Alcotest.testable =
-  (module struct include Diff let equal = (=) end)
-
-let diffs = Alcotest.slist diff Datakit_github_conv.Diff.compare
+let diff: Snapshot.diff Alcotest.testable =
+  (module struct
+    type t = Snapshot.diff
+    let equal x y = Snapshot.compare_diff x y = 0
+    let pp = Snapshot.pp_diff
+  end)
 
 let counter: Counter.t Alcotest.testable = (module Counter)
 
+let snapshot ?(repos=[]) ?(commits=[]) ?(status=[]) ?(prs=[]) ?(refs=[]) () =
+  Snapshot.create
+    ~repos:(Repo.Set.of_list repos)
+    ~commits:(Commit.Set.of_list commits)
+    ~status:(Status.Set.of_list status)
+    ~prs:(PR.Set.of_list prs)
+    ~refs:(Ref.Set.of_list refs)
+
 let test_snapshot () =
+  let r1 = { Repo.user = "a"; repo = "a" } in
+  let r2 = { Repo.user = "a"; repo = "b" } in
+  let s1 = snapshot ~repos:[r1] () in
+  let s2 = snapshot ~repos:[r2] () in
+  let d = Snapshot.diff s1 s2 in
+  Alcotest.(check diff) "repo"
+    (Snapshot.create_diff [`Update (`Repo r1); `Remove (`Repo r2)])
+    d
+
+let test_fs_snapshot () =
   quiet_9p ();
   quiet_git ();
   quiet_irmin ();
@@ -706,17 +724,17 @@ let test_snapshot () =
       update ~prs:[pr2] ~status:[] ~refs:[] >>*= fun s1 ->
       expect_head br >>*= fun head1 ->
       Conv.safe_diff (`Commit head1) head >>= fun diff1 ->
-      Alcotest.(check diffs) "diff1" [`PR (repo, 1)] (Diff.Set.elements diff1);
+      Alcotest.(check fsdiffs) "diff1" [`PR (repo, 1)] (FSDiff.Set.elements diff1);
       Conv.of_commit ~debug:"sd" ~old:sh head1 >>= fun sd ->
       Alcotest.(check snapshot) "snap diff" s1 (Conv.snapshot sd);
 
       update ~prs:[] ~status:[s5] ~refs:[ref2] >>*= fun s2 ->
       expect_head br >>*= fun head2 ->
       Conv.safe_diff (`Commit head2) head1 >>= fun diff2 ->
-      Alcotest.(check diffs) "diff2"
+      Alcotest.(check fsdiffs) "diff2"
         [`Status (commit_foo, ["foo";"bar";"baz"]);
          `Ref    (repo, ["heads";"master"])]
-        (Diff.Set.elements diff2);
+        (FSDiff.Set.elements diff2);
       Conv.of_commit ~debug:"sd1" ~old:sh head2 >>= fun sd1 ->
       Conv.of_commit ~debug:"ss2" ~old:sd head2 >>= fun sd2 ->
       Alcotest.(check snapshot) "snap diff1" s2 (Conv.snapshot sd1);
@@ -731,12 +749,12 @@ let test_snapshot () =
       expect_head br >>*= fun head3 ->
       Conv.safe_diff (`Commit head3) head2 >>= fun diff3 ->
       let d = `Unknown { Repo. user; repo = "toto" } in
-      Alcotest.(check diffs) "diff3" [d] (Diff.Set.elements diff3);
+      Alcotest.(check fsdiffs) "diff3" [d] (FSDiff.Set.elements diff3);
 
       Lwt.return_unit
     )
 
-let init status refs events =
+let init_github status refs events =
   let tbl = Hashtbl.create (List.length status) in
   List.iter (fun s ->
       let v =
@@ -763,9 +781,9 @@ let run_with_test_test f () =
   Test_utils.run (fun _repo conn ->
       let dk = DK.connect conn in
       DK.branch dk branch >>*= fun br ->
-      let t = init [] [] [] in
-      let s = VG.empty in
-      VG.sync ~policy:`Once ~token:t br s >>= fun _s ->
+      let gh = init_github [] [] [] in
+      let b = Bridge.empty in
+      Bridge.sync ~policy:`Once ~token:gh br b >>= fun _s ->
       DK.Branch.with_transaction br (fun tr ->
           Conv.update_repo tr `Monitored repo >>*= fun () ->
           DK.Transaction.commit tr ~message:"init"
@@ -824,31 +842,39 @@ let check name tree =
 open! Counter
 
 let test_events dk =
-  let t = init status0 refs0 events0 in
-  let s = VG.empty in
-  DK.branch dk branch >>*= fun br ->
-  let sync s = VG.sync ~policy:`Once ~token:t br s in
+  let gh = init_github status0 refs0 events0 in
+  let b = Bridge.empty in
+  DK.branch dk branch >>*= fun branch ->
+  let sync b = Bridge.sync ~policy:`Once ~token:gh branch b in
   Alcotest.(check counter) "counter: 0"
     { events = 0; prs = 0; status = 0; refs = 0;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
+    gh.API.ctx;
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 1"
     { events = 0; prs = 1; status = 1; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
-  sync s >>= fun _s ->
+    gh.API.ctx;
+  sync b >>= fun b ->
+  Alcotest.(check counter) "counter: 1*"
+    { events = 0; prs = 1; status = 1; refs = 1;
+      set_pr = 0; set_status = 0; set_ref = 0 }
+    gh.API.ctx;
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  Alcotest.(check counter) "counter: 1"
+    { events = 0; prs = 1; status = 1; refs = 1;
+      set_pr = 0; set_status = 0; set_ref = 0 }
+    gh.API.ctx;
+  sync b >>= fun _b ->
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 1; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
-  expect_head br >>*= fun head ->
+    gh.API.ctx;
+  expect_head branch >>*= fun head ->
   check "priv" (DK.Commit.tree head)
 
 (*
@@ -880,17 +906,17 @@ let test_updates dk =
   Alcotest.(check counter) "counter: 0"
     { events = 0; prs = 0; status = 0; refs = 0;
       set_pr = 0; set_status = 0; set_ref = 0  }
-    t.API.ctx;
+    gh.API.ctx;
   sync s >>= fun s ->
   Alcotest.(check counter) "counter: 1"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   sync s >>= fun s ->
   Alcotest.(check counter) "counter: 1'"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
 
   (* test status update *)
   let dir = root repo / "commit" / "foo" in
@@ -905,12 +931,12 @@ let test_updates dk =
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   sync s >>= fun s ->
   Alcotest.(check counter) "counter: 3"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   let status = find_status t repo in
   Alcotest.(check status_state) "update status" `Pending status.Status.state;
 
@@ -932,7 +958,7 @@ let test_updates dk =
   Alcotest.(check counter) "counter: 4"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 1; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   let pr = find_pr t repo in
   Alcotest.(check string) "update pr's title" "hahaha" pr.PR.title;
   Lwt.return_unit
@@ -949,18 +975,18 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 1"
     { events = 0; prs = 0; status = 0; refs = 0;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   sync s >>= fun s ->
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   update_status pub dir `Pending >>*= fun () ->
   sync s >>= fun s ->
   Alcotest.(check counter) "counter: 3"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
 
   sync s >>= fun s ->
   sync s >>= fun s ->
@@ -968,7 +994,7 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 3'"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
 
   (* restart *)
   let s = VG.empty in
@@ -976,13 +1002,13 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 4"
     { events = 0; prs = 2; status = 4; refs = 2;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   sync s >>= fun s ->
   sync s >>= fun _s ->
   Alcotest.(check counter) "counter: 4'"
     { events = 0; prs = 2; status = 4; refs = 2;
       set_pr = 0; set_status = 1; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
 
   (* restart with dirty public branch *)
   let s = VG.empty in
@@ -993,7 +1019,7 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 5"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   let status = find_status t repo in
   Alcotest.(check status_state) "update status" `Failure status.Status.state;
 
@@ -1001,7 +1027,7 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 6"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
 
   (* changes done in the public branch are never overwritten
      FIXME: we might want to improve/change this in the future. *)
@@ -1009,7 +1035,7 @@ let test_startup dk =
   Alcotest.(check counter) "counter: 7"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
-    t.API.ctx;
+    gh.API.ctx;
   let status_dir = dir / "status" / "foo" / "bar" / "baz" in
   expect_head pub >>*= fun h ->
   let tree = DK.Commit.tree h in
@@ -1392,21 +1418,21 @@ let test_random_gh ~quick _repo conn =
     let w = API.Webhook.v t in
     random_monitor ~random pub >>*= fun () ->
     VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >|= fun s ->
-    Alcotest.(check int) "API.set-*" 0 (Counter.sets t.API.ctx);
+    Alcotest.(check int) "API.set-*" 0 (Counter.sets gh.API.ctx);
     s
   in
   let nsync ~fresh n (t, s) =
     let rec aux k (t, s) =
       let s = if fresh then VG.empty else s  in
       let t =
-        let users = random_users ~random ~old:t.API.users in
-        let events = Users.diff_events users t.API.users in
+        let users = random_users ~random ~old:gh.API.users in
+        let events = Users.diff_events users gh.API.users in
         API.create ~events users
       in
       let w = API.Webhook.v t in
       random_monitor ~random pub >>*= fun () ->
       VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >>= fun s ->
-      Alcotest.(check int) "API.set-*" 0 (Counter.sets t.API.ctx);
+      Alcotest.(check int) "API.set-*" 0 (Counter.sets gh.API.ctx);
       let msg = Fmt.strf "update %d (fresh=%b)" (n - k + 1) fresh in
       ensure_pub_in_sync ~msg t pub >>= fun () ->
       if k > 1 then aux (k-1) (t, s) else Lwt.return (t, s)
@@ -1416,14 +1442,14 @@ let test_random_gh ~quick _repo conn =
   let t = API.create (random_users ~random ?old:None) in
   sync (t, VG.empty) >>= fun _ ->
   ensure_pub_in_sync ~msg:"init" t pub >>= fun () ->
-  let t = API.create (random_users ~random ~old:t.API.users) in
+  let t = API.create (random_users ~random ~old:gh.API.users) in
   sync (t, VG.empty) >>= fun s ->
   ensure_pub_in_sync ~msg:"update" t pub >>= fun () ->
   nsync ~fresh:false (if quick then 2 else 10) (t, s) >>= fun (t, s) ->
   nsync ~fresh:true (if quick then 2 else 30)  (t, s) >>= fun (t, s) ->
   nsync ~fresh:false (if quick then 2 else 20) (t, s) >>= fun (t, s) ->
   let users = Users.of_repos (API.all_repos t) in
-  let events = Users.diff_events users t.API.users in
+  let events = Users.diff_events users gh.API.users in
   let t = API.create ~events users in
   sync (t, s) >>= fun _s ->
   ensure_pub_in_sync ~msg:"empty" t pub >>= fun () ->
@@ -1462,7 +1488,7 @@ let test_random_dk ~quick _repo conn =
     monitor (Repo.Set.elements (Users.repos users)) pub >>*= fun () ->
     let w = API.Webhook.v t in
     VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >>= fun s ->
-    Log.debug (fun l -> l "API.set-* = %d" (Counter.sets t.API.ctx));
+    Log.debug (fun l -> l "API.set-* = %d" (Counter.sets gh.API.ctx));
     ensure_github_in_sync ~msg t (prune users) >|= fun () ->
     (s, t)
   in

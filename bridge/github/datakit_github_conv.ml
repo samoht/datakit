@@ -21,6 +21,8 @@ let list_iter_s f l =
 
 let pp_path = Fmt.(list ~sep:(unit "/") string)
 
+module DDiff = Datakit_github.Diff
+
 module Diff = struct
 
   type t = [
@@ -29,16 +31,16 @@ module Diff = struct
     | `Commit of Commit.t
     | `Status of Status.id
     | `Ref of Ref.id
-    | `Unknown of Repo.t
+    | `Other of Repo.t
   ]
 
   let pp ppf = function
     | `Repo r    -> Fmt.pf ppf "{%a}" Repo.pp r
-    | `Unknown r -> Fmt.pf ppf "{%a ?}" Repo.pp r
     | `PR id     -> Fmt.pf ppf "%a" PR.pp_id id
-    | `Ref id    -> Fmt.pf ppf "%a" Ref.pp_id id
-    | `Commit c  -> Fmt.pf ppf "%a" Commit.pp c
     | `Status id -> Fmt.pf ppf "%a" Status.pp_id id
+    | `Commit c  -> Fmt.pf ppf "%a" Commit.pp c
+    | `Ref id    -> Fmt.pf ppf "%a" Ref.pp_id id
+    | `Other r   -> Fmt.pf ppf "{%a ?}" Repo.pp r
 
   let compare: t -> t -> int = Pervasives.compare
 
@@ -47,6 +49,40 @@ module Diff = struct
       let compare = compare
       let pp = pp
     end)
+
+end
+
+module Make (DK: Datakit_S.CLIENT) = struct
+
+  type nonrec 'a result = ('a, DK.error) result Lwt.t
+
+  type tree = DK.Tree.t
+
+  (* conversion between GitHub and DataKit states. *)
+
+  let safe_remove t path =
+    DK.Transaction.remove t path >>= function
+    | Error _ | Ok () -> ok ()
+
+  let safe_read_dir t dir =
+    DK.Tree.read_dir t dir >|= function
+    | Error _ -> []
+    | Ok dirs -> dirs
+
+  let safe_exists_dir t dir =
+    DK.Tree.exists_dir t dir >|= function
+    | Error _ -> false
+    | Ok b    -> b
+
+  let safe_exists_file t file =
+    DK.Tree.exists_file t file >|= function
+    | Error _ -> false
+    | Ok b    -> b
+
+  let safe_read_file t file =
+    DK.Tree.read_file t file >|= function
+    | Error _ -> None
+    | Ok b    -> Some (String.trim (Cstruct.to_string b))
 
   let path_of_diff = function
     | `Added f | `Removed f | `Updated f -> Datakit_path.unwrap f
@@ -67,70 +103,17 @@ module Diff = struct
               Some (`Status ({ Commit.repo; id }, without_last tl))
             | "ref" :: ( _ :: _ :: _ as tl)  ->
               Some (`Ref (repo, without_last tl))
-            |  _ -> Some (`Unknown repo)
+            |  _ -> Some (`Other repo)
         in
         match t with
         | None   -> acc
-        | Some t -> Set.add t acc
-      ) Set.empty diff
-
-end
-
-module Make (DK: Datakit_S.CLIENT) = struct
-
-  type nonrec 'a result = ('a, DK.error) result Lwt.t
-
-  (* conversion between GitHub and DataKit states. *)
-
-  let safe_remove t path =
-    DK.Transaction.remove t path >>= function
-    | Error _ | Ok () -> ok ()
-
-  type tree =
-    | Tree: DK.Tree.t -> tree
-    | Transaction: DK.Transaction.t -> tree
-
-  let safe_read_dir t dir =
-    (match t with
-     | Tree t -> DK.Tree.read_dir t dir
-     | Transaction t -> DK.Transaction.read_dir t dir
-    ) >|= function
-    | Error _ -> []
-    | Ok dirs -> dirs
-
-  let safe_exists_dir t dir =
-    (match t with
-     | Tree t -> DK.Tree.exists_dir t dir
-     | Transaction t -> DK.Transaction.exists_dir t dir
-    ) >|= function
-    | Error _ -> false
-    | Ok b    -> b
-
-  let safe_exists_file t file =
-    (match t with
-     | Tree t -> DK.Tree.exists_file t file
-     | Transaction t -> DK.Transaction.exists_file t file
-    ) >|= function
-    | Error _ -> false
-    | Ok b    -> b
-
-  let safe_read_file t file =
-    (match t with
-     | Tree t -> DK.Tree.read_file t file
-     | Transaction t -> DK.Transaction.read_file t file
-    ) >|= function
-    | Error _ -> None
-    | Ok b    -> Some (String.trim (Cstruct.to_string b))
-
-  type diffable = [`Transaction of DK.Transaction.t | `Commit of DK.Commit.t ]
+        | Some t -> Diff.Set.add t acc
+      ) Diff.Set.empty diff
 
   let safe_diff t c =
-    (match t with
-     | `Commit t      -> DK.Commit.diff t c
-     | `Transaction t -> DK.Transaction.diff t c
-    )  >|= function
+    DK.Commit.diff t c >|= function
     | Error _ -> Diff.Set.empty
-    | Ok d    -> Diff.changes d
+    | Ok d    -> changes d
 
   let walk
       (type elt) (type t) (module Set: SET with type elt = elt and type t = t)
@@ -409,7 +392,7 @@ module Make (DK: Datakit_S.CLIENT) = struct
     Log.debug (fun l -> l "refs -> @;@[<2>%a@]" Ref.Set.pp refs);
     refs
 
-  let update_ref tr s r =
+  let update_ref_aux tr s r =
     let path = Datakit_path.of_steps_exn (Ref.name r) in
     Log.debug (fun l -> l "update_ref %a" Datakit_path.pp path);
     let dir = root (Ref.repo r) / "ref" /@ path in
@@ -420,11 +403,14 @@ module Make (DK: Datakit_S.CLIENT) = struct
       let head = Cstruct.of_string (Ref.commit_id r ^ "\n") in
       DK.Transaction.create_or_replace_file tr ~dir "head" head
 
+  let update_ref tr r = update_ref_aux tr `Updated r
+  let remove_ref tr r = update_ref_aux tr `Removed r
+
   let update_event t = function
     | Event.Repo (s, r) -> update_repo t s r
     | Event.PR pr       -> update_pr t pr
     | Event.Status s    -> update_status t s
-    | Event.Ref (s, r)  -> update_ref t s r
+    | Event.Ref (s, r)  -> update_ref_aux t s r
     | Event.Other o     ->
       Log.debug (fun l  -> l "ignoring event: %s" @@ snd o);
       ok ()
@@ -438,7 +424,8 @@ module Make (DK: Datakit_S.CLIENT) = struct
     refs ~repos tree >|= fun refs ->
     Snapshot.create ~repos ~status ~prs ~refs ~commits
 
-  let snapshot_of_tree tree =
+  let snapshot_of_commit c =
+    let tree = DK.Commit.tree c in
     repos tree >>= fun repos ->
     snapshot_of_repos tree repos
 
@@ -446,34 +433,35 @@ module Make (DK: Datakit_S.CLIENT) = struct
 
   let combine_repo t tree r =
     repo tree r >>= function
-    | None   -> Snapshot.without_repo r t |> Lwt.return
+    | None   -> Lwt.return (DDiff.with_remove Snapshot.(with_repo r empty) t)
     | Some r ->
       snapshot_of_repos tree (Repo.Set.singleton r) >|= fun s ->
-      Snapshot.union s t
+      DDiff.with_update s t
 
   let combine_commit t tree c =
     commit tree (Commit.repo c) (Commit.id c) >|= function
-    | None   -> Snapshot.without_commit c t
-    | Some c -> Snapshot.with_commit c t
+    | None   -> DDiff.with_remove Snapshot.(with_commit c empty) t
+    | Some c -> DDiff.with_update Snapshot.(with_commit c empty) t
 
   let combine_pr t tree (r, id as x)  =
     pr tree r id >|= function
-    | None    -> Snapshot.without_pr x t
-    | Some pr -> Snapshot.with_pr pr t
+    | Some pr -> DDiff.with_update Snapshot.(with_pr pr empty) t
+    | None    -> DDiff.with_remove Snapshot.(without_pr x empty) t
 
   let combine_status t tree (c, context as x) =
     status tree c context >|= function
-    | None   -> Snapshot.without_status x t
-    | Some s -> Snapshot.with_status s t
+    | None   -> DDiff.with_remove Snapshot.(without_status x empty) t
+    | Some s -> DDiff.with_update Snapshot.(with_status s empty) t
 
   let combine_ref t tree (r, name as x) =
     ref_ tree r name >|= function
-    | None   -> Snapshot.without_ref x t
-    | Some r -> Snapshot.with_ref r t
+    | None   -> DDiff.with_remove Snapshot.(without_ref x empty) t
+    | Some r -> DDiff.with_update Snapshot.(with_ref r empty) t
 
-  let combine init (tree, diff) =
+  let combine init head diff =
     Log.debug (fun l -> l "apply");
-    if Diff.Set.is_empty diff then Lwt.return init
+    let tree = DK.Commit.tree head in
+    if Diff.Set.is_empty diff then Lwt.return DDiff.empty
     else Lwt_list.fold_left_s (fun acc -> function
         | `Repo repo -> combine_repo acc tree repo
         | `PR id     -> combine_pr acc tree id
@@ -482,12 +470,13 @@ module Make (DK: Datakit_S.CLIENT) = struct
         | `Status id ->
           combine_status acc tree id >>= fun acc ->
           combine_commit acc tree (fst id)
-        | `Unknown _ -> Lwt.return acc
-      ) init (Diff.Set.elements diff)
-      >|= fun t ->
-      Log.debug (fun l -> l "apply @[<2>(%a)@]@;@[<2>(%a)@]@;@[<2>->(%a)@]"
-                    Diff.Set.pp diff Snapshot.pp init Snapshot.pp t);
-      t
+        | `Other _   -> Lwt.return acc
+      ) DDiff.empty (Diff.Set.elements diff)
+      >|= fun r ->
+      Log.debug (fun l ->
+          l "apply @[<2>(%a)@]@;@[<2>(%a)@]@;@[<2>->(%a)@]"
+            Diff.Set.pp diff Snapshot.pp init DDiff.pp r);
+      r
 
   type t = {
     head    : DK.Commit.t;
@@ -499,6 +488,10 @@ module Make (DK: Datakit_S.CLIENT) = struct
 
   let pp ppf s =
     Fmt.pf ppf "@[%a:@;@[<2>%a@]@]" DK.Commit.pp s.head Snapshot.pp s.snapshot
+
+  let diff d t =
+    safe_diff d t.head >>= fun diff ->
+    combine t.snapshot t.head diff
 
   let tr_head tr =
     DK.Transaction.parents tr >>= function
@@ -521,12 +514,13 @@ module Make (DK: Datakit_S.CLIENT) = struct
           l "snapshot %s old=%s" debug c
         );
       tr_head tr >>= fun head ->
-      let tree = Transaction tr in
       match old with
-      | None -> snapshot_of_tree tree >|= fun snapshot -> tr, { head; snapshot }
+      | None ->
+        snapshot_of_commit head >|= fun snapshot -> tr, { head; snapshot }
       | Some old ->
-        safe_diff (`Transaction tr) old.head >>= fun diff ->
-        combine old.snapshot (tree, diff) >|= fun snapshot ->
+        safe_diff head old.head >>= fun diff ->
+        combine old.snapshot head diff >|= fun diff ->
+        let snapshot = Snapshot.apply old.snapshot diff in
         tr, { head; snapshot }
 
   let of_commit ~debug ?old head =
@@ -534,12 +528,11 @@ module Make (DK: Datakit_S.CLIENT) = struct
         let c = match old with None -> "*" | Some t -> DK.Commit.id t.head in
         l "snapshot %s old=%s" debug c
       );
-    let tree = Tree (DK.Commit.tree head) in
     match old with
-    | None     -> snapshot_of_tree tree >|= fun snapshot -> { head; snapshot }
+    | None     -> snapshot_of_commit head >|= fun snapshot -> { head; snapshot }
     | Some old ->
       safe_diff (`Commit head) old.head >>= fun diff ->
-      combine old.snapshot (tree, diff) >|= fun snapshot ->
+      combine old.snapshot head diff >|= fun snapshot ->
       { head; snapshot }
 
   let remove_snapshot ~debug = function
@@ -591,15 +584,15 @@ module Make (DK: Datakit_S.CLIENT) = struct
         >>*= fun () ->
         list_iter_s (update_pr tr) (PR.Set.elements prs)
         >>*= fun () ->
-        list_iter_s (update_ref tr `Updated) (Ref.Set.elements refs)
+        list_iter_s (update_ref tr) (Ref.Set.elements refs)
         >>*= fun () ->
         list_iter_s (update_status tr) (Status.Set.elements status)
       in
       ok (Some f)
 
   let apply ~debug diff tr =
-    let remove = Snapshot.to_remove diff in
-    let update = Snapshot.to_update diff in
+    let remove = DDiff.remove diff in
+    let update = DDiff.update diff in
     let clean () =
       remove_snapshot ~debug remove >>*= function
       | None   -> ok ()

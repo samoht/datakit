@@ -240,10 +240,14 @@ module Ref: sig
   end
   (** Sets of Git references. *)
 
-  type state = [`Created | `Updated | `Removed]
-  (** The type for reference state. *)
-
   val path: t -> Datakit_path.t
+
+
+  type state = [`Created | `Updated | `Removed]
+  (** The type for reference events' state. *)
+
+  val pp_state: state Fmt.t
+  (** [pp_state] is the pretty-printer for reference events' state.*)
 
 end
 
@@ -290,9 +294,9 @@ module Snapshot: sig
   val create:
     repos:Repo.Set.t -> commits:Commit.Set.t -> status:Status.Set.t ->
     prs:PR.Set.t -> refs:Ref.Set.t -> t
-  (** [create ?repos ~status ~prs] is a new snapshot [t] with
-      pull-requests [prs], build status [status] and repositories the
-      unions of [repos], the repositories of [status] and [prs]. *)
+  (** [create ~repos ~commits ~status ~prs ~refs] is a new snapshot
+      [t] with repositories [reps], commits [commits], pull-requests
+      [prs], build statuses [status] and Git references [refs]. *)
 
   val compare: t -> t -> int
   (** [compare] is the comparison function for snapshots. *)
@@ -307,23 +311,7 @@ module Snapshot: sig
   (** {1 Diffs} *)
 
   type diff
-  (** The type for snapshot differences. *)
-
-  val pp_diff: diff Fmt.t
-  (** [pp_diff] is the pretty-printer for diffs. *)
-
-  val is_diff_empty: diff -> bool
-  (** [is_diff_empty d] is true if [d] is empty. *)
-
-  val to_update: diff -> t option
-  (** [to_update d] is either [Some t], where [t] are the parts of [d]
-      which need to be updated, or [None] if everything is already
-      up-to-date. *)
-
-  val to_remove: diff -> t option
-  (** [to_remove d] is either [Some t], where [t] are the parts of [d]
-      which need to be deleted, or [None] if everything is already
-      up-to-date. *)
+  (** The type for snapshot diffs. *)
 
   val diff: t -> t -> diff
   (** [diff x y] is the difference between [x] and [y]. *)
@@ -380,6 +368,48 @@ module Snapshot: sig
   val without_ref: Ref.id -> t -> t
 
 end
+
+module Diff: sig
+
+  (** {1 GitHub Diffs} *)
+
+  type t = Snapshot.diff
+  (** The type for differences between GitHub states. *)
+
+  val pp: t Fmt.t
+  (** [pp] is the pretty-printer for diffs. *)
+
+  val compare: t -> t -> int
+  (** [compare_diff] is the comparison function for diffs. *)
+
+  val commit_message: t -> string
+  (** [commit_message d] is the commit message corresponding to the
+      diff [d]. *)
+
+  val empty: t
+  (** [empty] is the empty diff. *)
+
+  val is_empty: t -> bool
+  (** [is_empty d] is true if [d] is empty. *)
+
+  val update: t -> Snapshot.t option
+  (** [update d] is either [Some t], where [t] are the parts of
+      [d] which need to be updated, or [None] if everything is already
+      up-to-date. *)
+
+  val remove: t -> Snapshot.t option
+  (** [remove d] is either [Some t], where [t] are the parts of
+      [d] which need to be deleted, or [None] if everything is already
+      up-to-date. *)
+
+  val apply: t -> Snapshot.t -> Snapshot.t
+  (** [snapsho d s] applies [d] on top of the snapshot [s]. *)
+
+  val with_update: Snapshot.t -> t -> t
+  val with_remove: Snapshot.t -> t -> t
+
+end
+
 
 (** {1 API} *)
 
@@ -520,7 +550,7 @@ module State (API: API): sig
   (** [import ~token t r] imports the state of GitHub for the
       repositories [r] into [t]. API calls use the token [token]. *)
 
-  val apply: token -> Snapshot.diff -> unit Lwt.t
+  val apply: token -> Diff.t -> unit Lwt.t
   (** [apply ~token d] applies the snapshot diff [d] as a series of
       GitHub API calls, using the token [token]. *)
 
