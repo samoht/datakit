@@ -554,13 +554,16 @@ module Snapshot = struct
 
   (* Compute the diff between old_s and new_s. *)
   let diff x y =
+    Log.debug (fun l -> l "%a@;%a" pp x pp y);
     let mk t repos skip_pr skip_ref skip_status skip_commit =
       let neg f x = not (f x) in
       let prs = PR.Set.filter (neg skip_pr) t.prs in
       let refs = Ref.Set.filter (neg skip_ref) t.refs in
       let status = Status.Set.filter (neg skip_status) t.status in
       let commits = Commit.Set.filter (neg skip_commit) t.commits in
-      { repos; prs; refs; commits; status }
+      let t = { repos; prs; refs; commits; status } in
+      Log.debug (fun l -> l "XXX YYY %a" pp t);
+      t
     in
     let remove =
       let repos = Repo.Set.diff y.repos x.repos in
@@ -572,15 +575,10 @@ module Snapshot = struct
     in
     let update =
       let repos = Repo.Set.diff x.repos y.repos in
-      let skip_pr pr =
-        PR.Set.exists (fun y -> PR.same_id pr y && PR.compare pr y <> 0) y.prs
-      in
-      let skip_ref r =
-        Ref.Set.exists  (fun y -> Ref.same_id r y && Ref.compare r y <> 0) y.refs
-      in
+      let skip_pr pr = PR.Set.exists (fun x -> PR.same_id pr x) y.prs in
+      let skip_ref r = Ref.Set.exists (fun x -> Ref.same_id r x) y.refs in
       let skip_status s =
-        Status.Set.exists
-          (fun y -> Status.same_id s y && Status.compare s y <> 0) y.status
+        Status.Set.exists (fun x -> Status.same_id s x) y.status
       in
       let skip_commit _ = true in
       mk x repos skip_pr skip_ref skip_status skip_commit
