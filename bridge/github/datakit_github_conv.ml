@@ -518,9 +518,8 @@ module Make (DK: Datakit_S.CLIENT) = struct
       | None ->
         snapshot_of_commit head >|= fun snapshot -> tr, { head; snapshot }
       | Some old ->
-        safe_diff head old.head >>= fun diff ->
-        combine old.snapshot head diff >|= fun diff ->
-        let snapshot = Snapshot.apply old.snapshot diff in
+        diff head old >|= fun diff ->
+        let snapshot = DDiff.apply diff old.snapshot in
         tr, { head; snapshot }
 
   let of_commit ~debug ?old head =
@@ -531,13 +530,13 @@ module Make (DK: Datakit_S.CLIENT) = struct
     match old with
     | None     -> snapshot_of_commit head >|= fun snapshot -> { head; snapshot }
     | Some old ->
-      safe_diff (`Commit head) old.head >>= fun diff ->
-      combine old.snapshot head diff >|= fun snapshot ->
+      diff head old >|= fun diff ->
+      let snapshot = DDiff.apply diff old.snapshot in
       { head; snapshot }
 
-  let remove_snapshot ~debug = function
-    | None   -> ok None
-    | Some t ->
+  let remove_snapshot ~debug t =
+    if Snapshot.is_empty t then ok None
+    else
       let f tr =
         Log.debug
           (fun l -> l "remove_snapshot (from %s):@;%a" debug Snapshot.pp t);
@@ -570,9 +569,9 @@ module Make (DK: Datakit_S.CLIENT) = struct
       in
       ok (Some f)
 
-  let update_snapshot ~debug = function
-    | None   -> ok None
-    | Some t ->
+  let update_snapshot ~debug t =
+    if Snapshot.is_empty t then ok None
+    else
       let f tr =
         Log.debug
           (fun l -> l "update_snapshot (from %s):@;%a" debug Snapshot.pp t);

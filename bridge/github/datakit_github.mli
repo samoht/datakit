@@ -392,15 +392,12 @@ module Diff: sig
   val is_empty: t -> bool
   (** [is_empty d] is true if [d] is empty. *)
 
-  val update: t -> Snapshot.t option
-  (** [update d] is either [Some t], where [t] are the parts of
-      [d] which need to be updated, or [None] if everything is already
-      up-to-date. *)
+  val update: t -> Snapshot.t
+  (** [update d] are the objects in [d] which needs to be added or
+      updated. *)
 
-  val remove: t -> Snapshot.t option
-  (** [remove d] is either [Some t], where [t] are the parts of
-      [d] which need to be deleted, or [None] if everything is already
-      up-to-date. *)
+  val remove: t -> Snapshot.t
+  (** [remove d] are the objects in [d] which needs to be deleted. *)
 
   val apply: t -> Snapshot.t -> Snapshot.t
   (** [snapsho d s] applies [d] on top of the snapshot [s]. *)

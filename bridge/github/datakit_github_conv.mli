@@ -81,7 +81,7 @@ module Make (DK: Datakit_S.CLIENT): sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for {!snapshot} values. *)
 
-  val diff: Commit.t -> t -> Diff.t Lwt.t
+  val diff: DK.Commit.t -> t -> Diff.t Lwt.t
   (** [diff c t] computes the Github diff between the commit [c] and
       the snapshot [t]. *)
 

@@ -102,12 +102,12 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
     let diff = Snapshot.diff t.bridge (Conv.snapshot t.datakit) in
     Log.debug (fun l -> l "commit %a %a %a %b"
                   Snapshot.pp t.bridge Snapshot.pp (Conv.snapshot t.datakit)
-                  Snapshot.pp_diff diff (Snapshot.is_diff_empty diff)
+                  Diff.pp diff (Diff.is_empty diff)
               );
-    if Snapshot.is_diff_empty diff then
+    if Diff.is_empty diff then
       safe_abort tr >|= fun () -> true
     else
-      let message = Snapshot.commit_message diff in
+      let message = Diff.commit_message diff in
       safe_commit tr ~message
 
   let sync ~token ~webhook ?(retries=5) t tr repos =
