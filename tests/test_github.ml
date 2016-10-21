@@ -889,13 +889,15 @@ module Gen = struct
 
 end
 
+
 let test_basic_snapshot () =
   let random = Random.State.make [| 4; 5; 6 |] in
   (* repos *)
   let r1 = Gen.repo ~random in
   let r2 = Gen.repo ~random in
-  let s1 = mk_snapshot ~repos:[r1] () in
-  let s2 = mk_snapshot ~repos:[r2] () in
+  let r3 = Gen.repo ~random in
+  let s1 = mk_snapshot ~repos:[r1; r3] () in
+  let s2 = mk_snapshot ~repos:[r2; r3] () in
   let d = Snapshot.diff s1 s2 in
   let x = mk_diff [`Update (`Repo r1); `Remove (`Repo r2)] in
   Alcotest.(check diff) "repos" x d;
@@ -903,8 +905,9 @@ let test_basic_snapshot () =
   (* prs *)
   let pr1 = Gen.pr ~random in
   let pr2 = Gen.pr ~random in
-  let s1 = mk_snapshot ~prs:[pr1] () in
-  let s2 = mk_snapshot ~prs:[pr2] () in
+  let pr3 = Gen.pr ~random in
+  let s1 = mk_snapshot ~prs:[pr1; pr3] () in
+  let s2 = mk_snapshot ~prs:[pr2; pr3] () in
   let d = Snapshot.diff s1 s2 in
   let x = mk_diff [`Update (`PR pr1); `Remove (`PR pr2)] in
   Alcotest.(check diff) "prs" x d;
@@ -913,10 +916,10 @@ let test_basic_snapshot () =
   let r1 = Gen.ref ~random in
   let r2 = Gen.ref ~random in
   let r3 = Gen.ref ~random in
-  let s1 = mk_snapshot ~refs:[r1; r2] () in
-  let s2 = mk_snapshot ~refs:[r1; r3] () in
+  let s1 = mk_snapshot ~refs:[r1; r3] () in
+  let s2 = mk_snapshot ~refs:[r2; r3] () in
   let d = Snapshot.diff s1 s2 in
-  let x = mk_diff [`Update (`Ref r2); `Remove (`Ref r3)] in
+  let x = mk_diff [`Update (`Ref r1); `Remove (`Ref r2)] in
   Alcotest.(check diff) "refs" x d;
 
   (* status *)

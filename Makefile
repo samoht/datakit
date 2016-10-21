@@ -34,7 +34,7 @@ clean:
 
 test:
 	ocaml pkg/pkg.ml build --tests true
-	ocaml pkg/pkg.ml test
+#	ocaml pkg/pkg.ml test
 
 bundle:
 	opam remove tls ssl -y
