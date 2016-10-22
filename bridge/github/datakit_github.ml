@@ -469,8 +469,7 @@ module Snapshot = struct
     let keep x = s <> Status.commit x || l <> x.Status.context in
     { t with status = Status.Set.filter keep t.status }
 
-  let add_status t s =
-    { t with commits = Commit.Set.add (Status.commit s) t.commits }
+  let add_status t s = { t with status = Status.Set.add s t.status }
 
   let with_status s t = add_status (without_status (Status.id s) t) s
   let with_statuses = Status.Set.fold with_status

@@ -930,7 +930,7 @@ let test_basic_snapshot () =
   let s2 = mk_snapshot ~status:[b3] () in
   let d = Snapshot.diff s1 s2 in
   let x =
-    mk_diff [`Update (`Status b2); `Update (`Status b1); `Remove (`Status s3)]
+    mk_diff [`Update (`Status b2); `Update (`Status b1); `Remove (`Status b3)]
   in
   Alcotest.(check diff) "status" x d
 
