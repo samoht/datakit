@@ -279,7 +279,7 @@ module Ref = struct
   let name t = t.name
   let compare_repo x y = Repo.compare (repo x) (repo y)
   let compare_name x y = Pervasives.compare x.name y.name
-  let same_id x y = repo x = repo y && name x = name y
+  let same_id x y = Repo.compare (repo x) (repo y) = 0 && name x = name y
 
   let compare = compare_fold [
       compare_repo;
@@ -542,6 +542,16 @@ module Snapshot = struct
   }
 
   let create ~repos ~commits ~status ~prs ~refs =
+    let repos =
+      let (++) = Repo.Set.union in
+      repos ++ Commit.Set.repos commits ++ Status.Set.repos status
+      ++ PR.Set.repos prs ++ Ref.Set.repos refs
+    in
+    let commits =
+      let (++) = Commit.Set.union in
+      commits ++ Status.Set.commits status ++ PR.Set.commits prs
+      ++ Ref.Set.commits refs
+    in
     { repos; commits; status; prs; refs }
 
   let compare_repos x y = Repo.Set.compare x.repos y.repos
@@ -705,7 +715,7 @@ module Snapshot = struct
 
   (* Compute the diff between old_s and new_s. *)
   let diff x y =
-    Log.debug (fun l -> l "%a@;%a" pp x pp y);
+    Log.debug (fun l -> l "diff@;%a@;%a" pp x pp y);
     let mk t repos skip_pr skip_ref skip_status skip_commit =
       let neg f x = not (f x) in
       let prs = PR.Set.filter (neg skip_pr) t.prs in
@@ -727,12 +737,10 @@ module Snapshot = struct
     in
     let update =
       let repos = Repo.Set.diff x.repos y.repos in
-      let skip_pr pr = PR.Set.exists (fun x -> PR.same_id pr x) y.prs in
-      let skip_ref r = Ref.Set.exists (fun x -> Ref.same_id r x) y.refs in
-      let skip_status s =
-        Status.Set.exists (fun x -> Status.same_id s x) y.status
-      in
-      let skip_commit _ = true in
+      let skip_commit c = Commit.Set.mem c y.commits in
+      let skip_pr pr = PR.Set.mem pr y.prs in
+      let skip_ref r = Ref.Set.mem r y.refs in
+      let skip_status s = Status.Set.mem s y.status in
       mk x repos skip_pr skip_ref skip_status skip_commit
       |> elts
     in

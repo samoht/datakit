@@ -673,8 +673,7 @@ module Data = struct
   |]
 
   let titles = [| "it works!"; "merge me"; "yay!" |]
-  let pr_commits =  [| "123"; "456"; "789"; "0ab" |]
-  let ref_commits = [| "123"; "456"; "abc"; "def" |]
+  let commits =  [| "123"; "456"; "789"; "0ab"; "abc"; "def" |]
   let bases = [| "master"; "test"; "foo" |]
   let pr_states = [| `Closed; `Open  |]
   let users = [| "a"; "b" |]
@@ -710,10 +709,14 @@ module Gen = struct
   let choose ~random options =
     options.(Random.State.int random (Array.length options))
 
-  let repo ~random =
-    let user = choose ~random Data.users in
-    let repo = choose ~random Data.repos in
-    { Repo.user; repo }
+  let repo ?(x=[]) ~random () =
+    let rec aux () =
+      let user = choose ~random Data.users in
+      let repo = choose ~random Data.repos in
+      let r = { Repo.user; repo } in
+      if List.exists (fun x -> Repo.compare x r = 0) x then aux () else r
+    in
+    aux ()
 
   let description ~random = choose ~random Data.descriptions
   let build_state ~random = choose ~random Data.build_states
@@ -723,42 +726,49 @@ module Gen = struct
   let url ~random = choose ~random Data.urls
   let context ~random = choose ~random Data.contexts
 
-  let pr_commit ~random =
-    let id = choose ~random Data.pr_commits in
-    let repo = repo ~random in
-    { Commit.id; repo }
+  let commit ?(x=[]) ?repo:r ~random () =
+    let rec aux () =
+      let id = choose ~random Data.commits in
+      let repo = match r with Some r -> r | None -> repo ~random () in
+      let r = { Commit.id; repo } in
+      if List.exists (fun x -> Commit.compare x r = 0) x then aux () else r
+    in
+    aux ()
 
-  let ref_commit ~random =
-    let id = choose ~random Data.ref_commits in
-    let repo = repo ~random in
-    { Commit.id; repo }
+  let pr ?(x=[]) ?repo ~random () =
+    let rec aux () =
+      let head = commit ?repo ~random () in
+      let title = title ~random in
+      let number = Random.State.int random 10 in
+      let state = pr_state ~random in
+      let base = base ~random in
+      let r = { PR.head; number; title; state; base } in
+      if List.exists (PR.same_id r) x then aux () else r
+    in
+    aux ()
 
-  let pr ~random =
-    let head = pr_commit ~random in
-    let title = title ~random in
-    let number = Random.State.int random 10 in
-    let state = pr_state ~random in
-    let base = base ~random in
-    { PR.head; number; title; state; base }
+  let ref ?(x=[]) ?repo ~random () =
+    let rec aux () =
+      let head = commit ?repo ~random () in
+      let name = choose ~random Data.names in
+      let r = { Ref.head; name } in
+      if List.exists (Ref.same_id r) x then aux () else r
+    in
+    aux ()
 
-  let ref ~random =
-    let head = ref_commit ~random in
-    let name = choose ~random Data.names in
-    { Ref.head; name }
-
-  let status ~random =
-    let url = url ~random in
-    let commit = pr_commit ~random in
-    let context = context ~random in
-    let description = description ~random in
-    let state = build_state ~random in
-    { Status.commit; url; context; description; state }
+  let status ?(x=[]) ?repo ~random () =
+    let rec aux () =
+      let url = url ~random in
+      let commit = commit ?repo ~random () in
+      let context = context ~random in
+      let description = description ~random in
+      let state = build_state ~random in
+      let r = { Status.commit; url; context; description; state } in
+      if List.exists (Status.same_id r) x then aux () else r
+    in
+    aux ()
 
   let refs ~random ~repo ~old_refs =
-    let ref_commit ~random ~repo =
-      let id = choose ~random Data.ref_commits in
-      { Commit.repo; id }
-    in
     Data.names
     |> Array.to_list
     |> List.map (fun name ->
@@ -767,10 +777,10 @@ module Gen = struct
           | exception Not_found -> []
           | old_ref ->
             if Random.State.bool random then [] else
-              let head = ref_commit ~random ~repo in
+              let head = commit ~random ~repo () in
               [{ old_ref with Ref.head }]
         ) else (
-          let head = ref_commit ~random ~repo in
+          let head = commit ~random ~repo () in
           [{ Ref.head; name }]
         ))
     |> List.concat
@@ -795,10 +805,6 @@ module Gen = struct
     |> List.concat
 
   let prs ~random ~repo ~old_prs =
-    let random_pr_commit ~random ~repo =
-      let id = choose ~random Data.pr_commits in
-      { Commit.repo; id }
-    in
     let n_prs = Random.State.int random 4 in
     let old_prs = List.rev old_prs in
     let old_prs =
@@ -810,7 +816,7 @@ module Gen = struct
               | `Open when Random.State.bool random -> `Closed
               | s -> s
             in
-            let head = random_pr_commit ~random ~repo in
+            let head = commit ~random ~repo () in
             { pr with PR.state; head } :: prs
         ) [] old_prs
     in
@@ -821,7 +827,7 @@ module Gen = struct
     let rec make_prs acc = function
       | 0 -> acc
       | n ->
-        let head = random_pr_commit ~random ~repo in
+        let head = commit ~random ~repo () in
         let base = base ~random in
         let number = !next_pr in
         incr next_pr;
@@ -880,15 +886,45 @@ module Gen = struct
     |> String.Map.of_list
     |> fun users -> { Users.users }
 
+  let snapshot ~random =
+    let rec mk acc f = function
+      | 0 -> acc
+      | n -> mk (f acc) f (n-1)
+    in
+    let int n = Random.State.int random n in
+    let repos = mk Repo.Set.empty (Repo.Set.add (repo ~random ())) (int 2) in
+    let commits =
+      mk Commit.Set.empty (Commit.Set.add (commit ~random ())) (int 2)
+    in
+    let prs = mk PR.Set.empty (PR.Set.add (pr ~random ())) (int 4) in
+    let refs = mk Ref.Set.empty (Ref.Set.add (ref ~random ())) (int 3) in
+    let status =
+      mk Status.Set.empty (Status.Set.add (status ~random ())) (int 5)
+    in
+    Snapshot.create ~repos ~commits ~prs ~refs ~status
+
 end
 
+let commit_diff new_commits old_commits =
+  let new_commits = Commit.Set.of_list new_commits in
+  let old_commits = Commit.Set.of_list old_commits in
+  let updates =
+    Commit.Set.diff new_commits old_commits
+    |> Commit.Set.elements
+    |> List.map (fun c -> `Update (`Commit c))
+  in
+  let removes =
+    Commit.Set.diff old_commits new_commits
+    |> Commit.Set.elements
+    |> List.map (fun c -> `Remove (`Commit c))
+  in
+  updates @ removes
 
-let test_basic_snapshot () =
-  let random = Random.State.make [| 4; 5; 6 |] in
+let test_basic_snapshot_once random =
   (* repos *)
-  let r1 = Gen.repo ~random in
-  let r2 = Gen.repo ~random in
-  let r3 = Gen.repo ~random in
+  let r1 = Gen.repo ~random () in
+  let r2 = Gen.repo ~x:[r1] ~random () in
+  let r3 = Gen.repo ~x:[r1;r2] ~random () in
   let s1 = mk_snapshot ~repos:[r1; r3] () in
   let s2 = mk_snapshot ~repos:[r2; r3] () in
   let d = Snapshot.diff s1 s2 in
@@ -896,37 +932,75 @@ let test_basic_snapshot () =
   Alcotest.(check diff) "repos" x d;
 
   (* prs *)
-  let pr1 = Gen.pr ~random in
-  let pr2 = Gen.pr ~random in
-  let pr3 = Gen.pr ~random in
+  let repo = Gen.repo ~random () in
+  let pr1 = Gen.pr ~random ~repo () in
+  let pr2 = Gen.pr ~x:[pr1] ~random ~repo () in
+  let pr3 = Gen.pr ~x:[pr1; pr2] ~random ~repo () in
   let s1 = mk_snapshot ~prs:[pr1; pr3] () in
   let s2 = mk_snapshot ~prs:[pr2; pr3] () in
   let d = Snapshot.diff s1 s2 in
-  let x = mk_diff [`Update (`PR pr1); `Remove (`PR (PR.id pr2))] in
+  Fmt.pr "XXX s1=%a\n%!" Snapshot.pp s1;
+  Fmt.pr "XXX s2=%a\n%!" Snapshot.pp s2;
+  let x =
+    mk_diff ([`Update (`PR pr1); `Remove (`PR (PR.id pr2))]
+             @ commit_diff
+               [PR.commit pr1; PR.commit pr3]
+               [PR.commit pr2; PR.commit pr3])
+  in
   Alcotest.(check diff) "prs" x d;
 
   (* refs *)
-  let r1 = Gen.ref ~random in
-  let r2 = Gen.ref ~random in
-  let r3 = Gen.ref ~random in
-  let s1 = mk_snapshot ~refs:[r1; r3] () in
-  let s2 = mk_snapshot ~refs:[r2; r3] () in
+  let repo = Gen.repo ~random () in
+  let r1 = Gen.ref ~random ~repo () in
+  let r2 = Gen.ref ~x:[r1] ~random ~repo () in
+  let r3 =
+    let head = Gen.commit ~x:[Ref.commit r2] ~repo ~random () in
+    { r2 with Ref.head }
+  in
+  let s1 = mk_snapshot ~refs:[r2; r1] () in
+  let s2 = mk_snapshot ~refs:[r3; r1] () in
   let d = Snapshot.diff s1 s2 in
-  let x = mk_diff [`Update (`Ref r1); `Remove (`Ref (Ref.id r2))] in
+  let x =
+    mk_diff ([`Update (`Ref r2)]
+             @ commit_diff
+               [Ref.commit r1; Ref.commit r2]
+               [Ref.commit r1; Ref.commit r3])
+  in
   Alcotest.(check diff) "refs" x d;
 
   (* status *)
-  let b1 = Gen.status ~random in
-  let b2 = Gen.status ~random in
-  let b3 = Gen.status ~random in
+  let repo = Gen.repo ~random () in
+  let b1 = Gen.status ~random ~repo () in
+  let b2 = Gen.status ~x:[b1] ~random ~repo () in
+  let b3 = Gen.status ~x:[b1;b2] ~random ~repo () in
   let s1 = mk_snapshot ~status:[b1; b2] () in
   let s2 = mk_snapshot ~status:[b3] () in
   let d = Snapshot.diff s1 s2 in
   let x =
-    mk_diff [`Update (`Status b2); `Update (`Status b1);
-             `Remove (`Status (Status.id b3))]
+    mk_diff ([`Update (`Status b2); `Update (`Status b1);
+              `Remove (`Status (Status.id b3))] @
+             commit_diff
+               [Status.commit b1; Status.commit b2]
+               [Status.commit b3])
   in
-  Alcotest.(check diff) "status" x d
+  Alcotest.(check diff) "status" x d;
+
+  (* diff *)
+  let s1 = Gen.snapshot ~random in
+  let s2 = Gen.snapshot ~random in
+  let d = Snapshot.diff s1 s2 in
+  let s3 = Diff.apply d s2 in
+  Fmt.pr "XXX s1=%a\n%!" Snapshot.pp s1;
+  Fmt.pr "XXX s2=%a\n%!" Snapshot.pp s2;
+  Fmt.pr "XXX s3=%a\n%!" Snapshot.pp s3;
+  Fmt.pr "XXX d=%a\n%!" Diff.pp d;
+  Alcotest.(check snapshot) "diff/apply" s1 s3
+
+let test_basic_snapshot () =
+  let random = Random.State.make [| 4; 5; 6 |] in
+  for _ = 0 to 100 do
+    test_basic_snapshot_once random
+  done
 
 let test_snapshot () =
   quiet_9p ();

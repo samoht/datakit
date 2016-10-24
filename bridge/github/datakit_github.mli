@@ -47,6 +47,9 @@ module Repo: sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for Github repositories. *)
 
+  val compare: t -> t -> int
+  (** [compare] compares repositories.*)
+
   val pp_state: state Fmt.t
   (** [pp_state] is the pretty-printer for repository state. *)
 
@@ -62,6 +65,9 @@ module Commit: sig
 
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for commits. *)
+
+  val compare: t -> t -> int
+  (** [compare] compares commits. *)
 
   val repo: t -> Repo.t
   (** [repo t] is [t]'s repository. *)
