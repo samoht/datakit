@@ -658,16 +658,9 @@ let mk_snapshot ?(repos=[]) ?(commits=[]) ?(status=[]) ?(prs=[]) ?(refs=[]) () =
     ~refs:(Ref.Set.of_list refs)
 
 let mk_diff l =
-  let id acc = function
-    | `Repo r   -> Snapshot.(with_repo r acc)
-    | `Commit c -> Snapshot.(with_commit c acc)
-    | `Status s -> Snapshot.(with_status s acc)
-    | `PR pr    -> Snapshot.(with_pr pr acc)
-    | `Ref r    -> Snapshot.(with_ref r acc)
-  in
   let diff acc = function
-    | `Update x -> Diff.with_update (id (Diff.update acc) x) acc
-    | `Remove x -> Diff.with_remove (id (Diff.remove acc) x) acc
+    | `Update x -> Diff.with_update x acc
+    | `Remove x -> Diff.with_remove x acc
   in
   List.fold_left diff Diff.empty l
 
@@ -909,7 +902,7 @@ let test_basic_snapshot () =
   let s1 = mk_snapshot ~prs:[pr1; pr3] () in
   let s2 = mk_snapshot ~prs:[pr2; pr3] () in
   let d = Snapshot.diff s1 s2 in
-  let x = mk_diff [`Update (`PR pr1); `Remove (`PR pr2)] in
+  let x = mk_diff [`Update (`PR pr1); `Remove (`PR (PR.id pr2))] in
   Alcotest.(check diff) "prs" x d;
 
   (* refs *)
@@ -919,7 +912,7 @@ let test_basic_snapshot () =
   let s1 = mk_snapshot ~refs:[r1; r3] () in
   let s2 = mk_snapshot ~refs:[r2; r3] () in
   let d = Snapshot.diff s1 s2 in
-  let x = mk_diff [`Update (`Ref r1); `Remove (`Ref r2)] in
+  let x = mk_diff [`Update (`Ref r1); `Remove (`Ref (Ref.id r2))] in
   Alcotest.(check diff) "refs" x d;
 
   (* status *)
@@ -930,7 +923,8 @@ let test_basic_snapshot () =
   let s2 = mk_snapshot ~status:[b3] () in
   let d = Snapshot.diff s1 s2 in
   let x =
-    mk_diff [`Update (`Status b2); `Update (`Status b1); `Remove (`Status b3)]
+    mk_diff [`Update (`Status b2); `Update (`Status b1);
+             `Remove (`Status (Status.id b3))]
   in
   Alcotest.(check diff) "status" x d
 
@@ -942,29 +936,12 @@ let test_snapshot () =
       let dk = DK.connect conn in
       DK.branch dk "test-snapshot" >>*= fun br ->
       let update ~prs ~status ~refs =
-        let err e = Lwt.fail_with @@ Fmt.strf "%a" DK.pp_error e in
         DK.Branch.with_transaction br (fun tr ->
-            begin Conv.update_repo tr `Monitored repo >>= function
-              | Ok ()   -> Lwt.return_unit
-              | Error e -> err e
-            end >>= fun () ->
-            Lwt_list.iter_p (fun pr ->
-                Conv.update_pr tr pr >>= function
-                | Ok ()   -> Lwt.return_unit
-                | Error e -> err e
-              ) prs
-            >>= fun () ->
-            Lwt_list.iter_p (fun s ->
-                Conv.update_status tr s >>= function
-                | Ok ()   -> Lwt.return_unit
-                | Error e -> err e
-              ) status
-            >>= fun () ->
-            Lwt_list.iter_p (fun r ->
-                Conv.update_ref tr r >>= function
-                | Ok ()   -> Lwt.return_unit
-                | Error e -> err e
-              ) refs
+            Lwt_list.iter_p (Conv.update_elt tr)
+              (`Repo repo ::
+               (List.map (fun pr -> `PR pr) prs) @
+               (List.map (fun s  -> `Status s) status) @
+               (List.map (fun r  -> `Ref r) refs))
             >>= fun () ->
             DK.Transaction.commit tr ~message:"init" >>*= fun () ->
             Conv.of_branch ~debug:"init" br >>= fun (_, s) ->
@@ -986,16 +963,17 @@ let test_snapshot () =
 
       update ~prs:[pr2] ~status:[] ~refs:[] >>*= fun s1 ->
       expect_head br >>*= fun head1 ->
-      Conv.diff head1 sh >>= fun diff1 ->
-      Alcotest.(check diff) "diff1" (mk_diff [`Update (`PR pr1)]) diff1;
+      Conv.diff head1 head >>= fun diff1 ->
+      Alcotest.(check diff) "diff1" (mk_diff [`Update (`PR pr2)]) diff1;
       Conv.of_commit ~debug:"sd" ~old:sh head1 >>= fun sd ->
       Alcotest.(check snapshot) "snap diff" s1 (Conv.snapshot sd);
 
       update ~prs:[] ~status:[s5] ~refs:[ref2] >>*= fun s2 ->
       expect_head br >>*= fun head2 ->
-      Conv.diff head2 sd >>= fun diff2 ->
+      Conv.diff head2 head1 >>= fun diff2 ->
       Alcotest.(check diff) "diff2"
-        (mk_diff [`Update (`Status s5); `Update (`Ref ref2)])
+        (mk_diff [`Update (`Status s5); `Update (`Ref ref2);
+                  `Update (`Commit commit_foo)])
         diff2;
       Conv.of_commit ~debug:"sd1" ~old:sh head2 >>= fun sd1 ->
       Conv.of_commit ~debug:"ss2" ~old:sd head2 >>= fun sd2 ->
@@ -1010,7 +988,7 @@ let test_snapshot () =
         ) >>*= fun () ->
       expect_head br >>*= fun head3 ->
 
-      Conv.diff head3 sd1 >>= fun diff3 ->
+      Conv.diff head3 head2 >>= fun diff3 ->
       Alcotest.(check diff) "diff3" Diff.empty diff3;
 
       Lwt.return_unit
@@ -1047,7 +1025,7 @@ let run_with_test_test f () =
       let b = Bridge.empty in
       Bridge.sync ~policy:`Once ~token:gh br b >>= fun _s ->
       DK.Branch.with_transaction br (fun tr ->
-          Conv.update_repo tr `Monitored repo >>*= fun () ->
+          Conv.update_elt tr (`Repo repo) >>= fun () ->
           DK.Transaction.commit tr ~message:"init"
         )
       >>*= fun () ->

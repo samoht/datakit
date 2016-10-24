@@ -6,9 +6,6 @@ open Datakit_github
 (** Conversion between GitHub and DataKit states. *)
 module Make (DK: Datakit_S.CLIENT): sig
 
-  type nonrec 'a result = ('a, DK.error) Result.result Lwt.t
-  (** The type for conversion results. *)
-
   type tree = DK.Tree.t
   (** The type for trees. *)
 
@@ -16,11 +13,6 @@ module Make (DK: Datakit_S.CLIENT): sig
 
   val repos: tree -> Repo.Set.t Lwt.t
   (** [repos t] is the list of repositories stored in [t]. *)
-
-  val update_repo: DK.Transaction.t -> Repo.state -> Repo.t -> unit result
-  (** [update_repo t s r] applies the repository [r] to the
-      transaction [t]. Depending on the state [s] it can either remove
-      the directory or create a [monitored] file. *)
 
   (** {1 Status} *)
 
@@ -31,10 +23,6 @@ module Make (DK: Datakit_S.CLIENT): sig
   val statuses: ?commits:Commit.Set.t -> tree -> Status.Set.t Lwt.t
   (** [statuses t] is the list of status stored in [t]. *)
 
-  val update_status: DK.Transaction.t -> Status.t -> unit result
-  (** [update_status t s] applies the status [s] to the transaction
-      [t]. *)
-
   (** {1 Pull requests} *)
 
   val pr: tree -> Repo.t -> int -> PR.t option Lwt.t
@@ -44,26 +32,22 @@ module Make (DK: Datakit_S.CLIENT): sig
   val prs: ?repos:Repo.Set.t -> tree -> PR.Set.t Lwt.t
   (** [prs t] is the list of pull requests stored in [t]. *)
 
-  val update_pr: DK.Transaction.t -> PR.t -> unit result
-  (** [update_pr t pr] applies the pull-request [pr] to the
-      transaction [t]. *)
-
   (** {1 Git References} *)
 
   val refs: ?repos:Repo.Set.t -> tree -> Ref.Set.t Lwt.t
   (** [refs t] is the list of Git references stored in [t].*)
 
-  val update_ref: DK.Transaction.t -> Ref.t -> unit result
-  (** [update_ref t r] applies the Git reference [r] to the
-      transaction [t]. *)
+  (** {1 Updates} *)
 
-  val remove_ref: DK.Transaction.t -> Ref.t -> unit result
-  (** [remove_ref t s r] removes the Git reference [r]'s directory
-      from the transaction [t]. *)
+  val update_elt: DK.Transaction.t -> Elt.t -> unit Lwt.t
+  (** [update_elt t e] updates the element [e] in the transaction
+      [t]. *)
 
-  (** {1 Events} *)
+  val remove_elt: DK.Transaction.t -> Elt.id -> unit Lwt.t
+  (** [remove_elt t e] removes the element [e] in the transaction
+      [t]. *)
 
-  val update_event: DK.Transaction.t -> Event.t -> unit result
+  val update_event: DK.Transaction.t -> Event.t -> unit Lwt.t
   (** [update_event t e] applies the (webhook) event [e] to the
       transaction [t]. *)
 
@@ -81,9 +65,9 @@ module Make (DK: Datakit_S.CLIENT): sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for {!snapshot} values. *)
 
-  val diff: DK.Commit.t -> t -> Diff.t Lwt.t
-  (** [diff c t] computes the Github diff between the commit [c] and
-      the snapshot [t]. *)
+  val diff: DK.Commit.t -> DK.Commit.t -> Diff.t Lwt.t
+  (** [diff x y] computes the difference between the commits [x] and
+      [y]. *)
 
   val of_branch:
     debug:string -> ?old:t -> DK.Branch.t -> (DK.Transaction.t * t) Lwt.t
@@ -99,7 +83,7 @@ module Make (DK: Datakit_S.CLIENT): sig
   (** Same as {!of_branch} but does not allow to update the underlying
       store. *)
 
-  val apply: debug:string -> Diff.t -> DK.Transaction.t -> unit result
+  val apply: debug:string -> Diff.t -> DK.Transaction.t -> unit Lwt.t
   (** [apply d t] applies the snapshot diff [d] into the datakit
       transaction [t]. *)
 

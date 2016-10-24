@@ -168,6 +168,9 @@ module Status: sig
   val id: t -> id
   (** [id t] is [t]'s ID. *)
 
+  val context: t -> string list
+  (** [context t] is [t]'s context. *)
+
   val repo: t -> Repo.t
   (** [repo t] is [t]'s repository. *)
 
@@ -176,12 +179,6 @@ module Status: sig
 
   val commit_id: t -> string
   (** [commit_id t] is [t]'s commit ID. *)
-
-  val path: t -> Datakit_path.t
-  (** [path t] is path corresponding to [t]'s context. The empty list
-      is rewritten into ["default"] to match the GitHub
-      API. Otherwise, segments are concatenated using ["/"] as a
-      separator. *)
 
   val same_id: t -> t -> bool
   (** [same_id x y] is true if [x] and [y] have the same ID. *)
@@ -240,9 +237,6 @@ module Ref: sig
   end
   (** Sets of Git references. *)
 
-  val path: t -> Datakit_path.t
-
-
   type state = [`Created | `Updated | `Removed]
   (** The type for reference events' state. *)
 
@@ -272,6 +266,35 @@ module Event: sig
 
   val repo: t -> Repo.t
   (** [repo t] is [t]'s repository. *)
+
+end
+
+module Elt: sig
+
+  type t = [
+    | `Repo of Repo.t
+    | `Commit of Commit.t
+    | `PR of PR.t
+    | `Status of Status.t
+    | `Ref of Ref.t
+  ]
+
+  val pp: t Fmt.t
+  val compare: t -> t -> int
+
+  type id = [
+    | `Repo of Repo.t
+    | `Commit of Commit.t
+    | `PR of PR.id
+    | `Status of Status.id
+    | `Ref of Ref.id
+  ]
+
+  val pp_id: id Fmt.t
+  val compare_id: id -> id -> int
+
+  module Set: SET with type elt = t
+  module IdSet: SET with type elt = id
 
 end
 
@@ -316,56 +339,32 @@ module Snapshot: sig
   val diff: t -> t -> diff
   (** [diff x y] is the difference between [x] and [y]. *)
 
-  (** {1 Repositories} *)
+  (** {1 Elements} *)
+
+  val elts: t -> Elt.Set.t
+  (** [elts t] is the collection of elements of [t]. *)
 
   val repos: t -> Repo.Set.t
   (** [repos t] are [t]'s repository. *)
 
-  val with_repo: Repo.t -> t -> t
-  (** [with_repo r t] it [t] with the repostiory [r] added. *)
-
-  val with_repos: Repo.Set.t -> t -> t
-  (** [with_repos] is like {!with_repo} but for a set of
-      repostiories. *)
-
-  val without_repo: Repo.t -> t -> t
-  (** [without_repo r t] is [t] without the repository [r]. *)
-
-  val without_repos: Repo.Set.t -> t -> t
-  (** [without_repos] is like {!without_repo} but for a set of
-      repositories. *)
-
-  (** {1 Commits} *)
+  val prs: t -> PR.Set.t
+  (** [prs t] are [t]'s pull-requests. *)
 
   val commits: t -> Commit.Set.t
   (** [commits t] are [t]'s commits. *)
 
-  val with_commit: Commit.t -> t -> t
-  val without_commit: Commit.t -> t -> t
-
-  (** {1 PRs} *)
-
-  val prs: t -> PR.Set.t
-  (** [prs t] are [t]'s pull-requests. *)
-
-  val with_pr: PR.t -> t -> t
-  val without_pr: PR.id -> t -> t
-
-  (** {1 Status} *)
-
   val status: t -> Status.Set.t
   (** [status t] are [t]'s build status. *)
-
-  val with_status: Status.t -> t -> t
-  val without_status: Status.id -> t -> t
-
-  (** {1 Refs} *)
 
   val refs: t -> Ref.Set.t
   (** [refs t] are [t]'s Git references. *)
 
-  val with_ref: Ref.t -> t -> t
-  val without_ref: Ref.id -> t -> t
+  val with_elt: Elt.t -> t -> t
+  (** [with_elt e t] it [t] with the element [e] added. *)
+
+  val with_elts: Elt.Set.t -> t -> t
+  (** [with_elts] is like {!with_elt} but for a collection of
+      elements. *)
 
 end
 
@@ -392,18 +391,21 @@ module Diff: sig
   val is_empty: t -> bool
   (** [is_empty d] is true if [d] is empty. *)
 
-  val update: t -> Snapshot.t
-  (** [update d] are the objects in [d] which needs to be added or
+  val update: t -> Elt.Set.t
+  (** [update d] are the elements in [d] which needs to be added or
       updated. *)
 
-  val remove: t -> Snapshot.t
-  (** [remove d] are the objects in [d] which needs to be deleted. *)
+  val remove: t -> Elt.IdSet.t
+  (** [remove d] are the elements in [d] which needs to be deleted. *)
 
   val apply: t -> Snapshot.t -> Snapshot.t
   (** [snapsho d s] applies [d] on top of the snapshot [s]. *)
 
-  val with_update: Snapshot.t -> t -> t
-  val with_remove: Snapshot.t -> t -> t
+  val with_update: Elt.t -> t -> t
+  (** [with_update e d] is [d] augmented with the update of [e]. *)
+
+  val with_remove: Elt.id -> t -> t
+  (** [with_remove e d] is [d] augmented with the removal of [e]. *)
 
 end
 
