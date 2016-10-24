@@ -722,9 +722,7 @@ module Snapshot = struct
       let refs = Ref.Set.filter (neg skip_ref) t.refs in
       let status = Status.Set.filter (neg skip_status) t.status in
       let commits = Commit.Set.filter (neg skip_commit) t.commits in
-      let t = { repos; prs; refs; commits; status } in
-      Log.debug (fun l -> l "XXX YYY %a" pp t);
-      t
+      { repos; prs; refs; commits; status }
     in
     let remove =
       let repos = Repo.Set.diff y.repos x.repos in
@@ -774,13 +772,12 @@ module Diff = struct
     if updates = 0 && removes = 0 then Fmt.strf "No changes!"
     else if updates = 0 && removes = 1 then
       Fmt.strf "1 item removed@;@;@[<2>%a@]" Elt.IdSet.pp t.remove
-    else if updates = 0 then
+    else if updates = 0 && removes > 1 then
       Fmt.strf "%d items removed@;@;@[<2>%a@]" removes Elt.IdSet.pp t.remove
     else if removes = 0 && updates = 1 then
       Fmt.strf "1 item updated@;@;@[<2>%a@]" Elt.Set.pp t.update
-    else if removes = 0 then
-      Fmt.strf "%d items removed@;@;@[<2>%a@]"
-        removes Elt.IdSet.pp t.remove
+    else if removes = 0 && updates > 1 then
+      Fmt.strf "%d items updated@;@;@[<2>%a@]" updates Elt.Set.pp t.update
     else
       Fmt.strf "%d items modified@;@;@[Updated@;<2>%a@]@;@;\
                 @[Removed@;<2>%a@]"

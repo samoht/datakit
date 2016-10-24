@@ -100,14 +100,11 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
 
   let commit t tr =
     let diff = Snapshot.diff t.bridge (Conv.snapshot t.datakit) in
-    Log.debug (fun l -> l "commit %a %a %a %b"
-                  Snapshot.pp t.bridge Snapshot.pp (Conv.snapshot t.datakit)
-                  Diff.pp diff (Diff.is_empty diff)
-              );
     if Diff.is_empty diff then
       safe_abort tr >|= fun () -> true
     else
       let message = Diff.commit_message diff in
+      Conv.apply ~debug:"commit" diff tr >>= fun () ->
       safe_commit tr ~message
 
   let sync ~token ~webhook ?(retries=5) t tr repos =
@@ -123,7 +120,6 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
       State.import token bridge repos >>= fun bridge ->
       let new_t = { t with bridge } in
       commit new_t tr >>= fun commited ->
-      Log.debug (fun l -> l "XXX sync: %b" commited);
       assert (is_closed tr);
       if commited then Lwt.return new_t
       else (

@@ -939,8 +939,6 @@ let test_basic_snapshot_once random =
   let s1 = mk_snapshot ~prs:[pr1; pr3] () in
   let s2 = mk_snapshot ~prs:[pr2; pr3] () in
   let d = Snapshot.diff s1 s2 in
-  Fmt.pr "XXX s1=%a\n%!" Snapshot.pp s1;
-  Fmt.pr "XXX s2=%a\n%!" Snapshot.pp s2;
   let x =
     mk_diff ([`Update (`PR pr1); `Remove (`PR (PR.id pr2))]
              @ commit_diff
@@ -990,10 +988,6 @@ let test_basic_snapshot_once random =
   let s2 = Gen.snapshot ~random in
   let d = Snapshot.diff s1 s2 in
   let s3 = Diff.apply d s2 in
-  Fmt.pr "XXX s1=%a\n%!" Snapshot.pp s1;
-  Fmt.pr "XXX s2=%a\n%!" Snapshot.pp s2;
-  Fmt.pr "XXX s3=%a\n%!" Snapshot.pp s3;
-  Fmt.pr "XXX d=%a\n%!" Diff.pp d;
   Alcotest.(check snapshot) "diff/apply" s1 s3
 
 let test_basic_snapshot () =
