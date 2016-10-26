@@ -800,7 +800,6 @@ module Capabilities = struct
 
   type op = [`Read | `Write]
   type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
-  type owner = [`GitHub | `Datakit]
 
   exception Error of string * string
 
@@ -834,11 +833,9 @@ module Capabilities = struct
 
   module X = struct
 
-    type t = { owner: owner; read: bool; write: bool }
-    let none = { owner = `GitHub; read = false; write = false }
-    let all = { owner = `GitHub; read = true; write = true }
-
-    let with_owner t owner = { t with owner }
+    type t = { read: bool; write: bool }
+    let none = { read = false; write = false }
+    let all = { read = true; write = true }
 
     let allow t = function
       | `Read  -> { t with read  = true }
@@ -852,29 +849,20 @@ module Capabilities = struct
       | `Read  -> t.read
       | `Write -> t.write
 
-    let pp_owner ppf = function
-      | `GitHub  -> Fmt.string ppf ""
-      | `Datakit -> Fmt.string ppf "+"
-
     let pp_rw ppf = function
       | (true , true ) -> Fmt.string ppf "rw"
       | (true , false) -> Fmt.string ppf "r"
       | (false, true ) -> Fmt.string ppf "w"
       | (false, false) -> Fmt.string ppf ""
 
-    let pp ppf t =
-      Fmt.pf ppf "%a%a" pp_rw (t.read, t.write) pp_owner t.owner
+    let pp ppf t = pp_rw ppf (t.read, t.write)
 
     let parse = function
-      | "rw+" -> { read = true ; write = true ; owner = `Datakit }
-      | "r+"  -> { read = true ; write = false; owner = `Datakit }
-      | "w+"  -> { read = false; write = true ; owner = `Datakit }
-      | "+"   -> { read = false; write = false; owner = `Datakit }
-      | "rw"  -> { read = true ; write = true ; owner = `GitHub  }
-      | "r"   -> { read = true ; write = false; owner = `GitHub  }
-      | "w"   -> { read = false; write = true ; owner = `GitHub  }
-      | ""    -> { read = false; write = false; owner = `GitHub  }
-      | s     -> raise (Error (s, "invalid capacity"))
+      | "rw" -> { read = true ; write = true  }
+      | "r"  -> { read = true ; write = false }
+      | "w"  -> { read = false; write = true  }
+      | ""   -> { read = false; write = false }
+      | s    -> raise (Error (s, "invalid capacity"))
 
   end
 
@@ -941,7 +929,6 @@ module Capabilities = struct
 
   let allow = apply X.allow
   let disallow = apply X.disallow
-  let with_owner = apply X.with_owner
 
   let x t r =
     try List.assoc r t.extra

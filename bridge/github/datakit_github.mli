@@ -439,9 +439,6 @@ module Capabilities: sig
   type op = [`Read | `Write]
   (** The type for API operations. *)
 
-  type owner = [`GitHub | `Datakit]
-  (** The type for resource owner. *)
-
   type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
   (** The type for API resources. *)
 
@@ -450,10 +447,6 @@ module Capabilities: sig
 
   val all: t
   (** [all] is the capability to do everything. *)
-
-  val with_owner: t -> owner -> [`Default | resource] -> t
-  (** [with_owner t o r] is [t] where the resource [r] is owned by
-      [o]. *)
 
   val allow: t -> op -> [`Default | resource] -> t
   (** [allow t o r] is [t] with the capability to do API calls of type

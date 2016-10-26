@@ -999,29 +999,43 @@ let test_basic_snapshot () =
 
 let test_capabilities () =
   let caps = [
-    "*:rw+";
-    "*:r,status[foo/bar]:w+";
-    "*:,pr:rw,status:w+";
-    "*:+,commit:,webhook:r+";
+    "*:rw";
+    "*:r,status[foo/bar]:w";
+    "*:,pr:rw,status:w";
+    "*:,commit:,webhook:r";
   ] in
+  let of_string str = match Capabilities.parse str with
+    | `Ok c    -> c
+    | `Error e -> Alcotest.fail (str ^ ": " ^ e)
+  in
+  let to_string = Fmt.to_to_string Capabilities.pp in
   List.iter (fun str ->
-      let c = match Capabilities.parse str with
-        | `Ok c    -> c
-        | `Error e -> Alcotest.fail (str ^ ": " ^ e)
-      in
-      Alcotest.(check string) str str (Fmt.to_to_string Capabilities.pp c)
+      let c = of_string str in
+      Alcotest.(check string) str str (to_string c)
     ) caps;
   let caps = [
     Capabilities.all;
     Capabilities.none;
-    Capabilities.(with_owner all `Datakit (`Status ["foo";"bar"]));
+    Capabilities.(allow all `Read (`Status ["foo";"bar"]));
+    Capabilities.(allow all `Write `Commit);
   ] in
   List.iter (fun c ->
       let str = Fmt.to_to_string Capabilities.pp c in
-      match Capabilities.parse str with
-      | `Ok d    -> Alcotest.(check capabilities) str c d
-      | `Error e -> Alcotest.fail (str ^ ": " ^ e)
-    ) caps
+      let d = of_string str in
+      Alcotest.(check capabilities) str c d
+    ) caps;
+  let checks = [
+    of_string "*:rw", `Read, `Status ["foo"], true;
+    of_string "*:w" , `Read, `PR, false;
+    of_string "*:w,pr:r", `Read , `PR, true;
+    of_string "*:w,pr:r", `Write, `PR, false;
+    of_string "*:w,pr:r", `Read , `Commit, false;
+    of_string "*:w,pr:r", `Write, `Commit, true;
+  ]
+  in
+  List.iter (fun (c, op, r, b) ->
+      Alcotest.(check bool) (to_string c) b Capabilities.(check c op r)
+    ) checks
 
 let test_snapshot () =
   quiet_9p ();
