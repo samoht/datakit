@@ -107,27 +107,36 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
       Conv.apply ~debug:"commit" diff tr >>= fun () ->
       safe_commit tr ~message
 
-  let sync ~token ~webhook ?(retries=5) t tr repos =
+  let process_webhooks ~token ~webhook t repos = match webhook with
+    | None                   -> Lwt.return t.bridge
+    | Some { watch; events } ->
+      State.add_webhooks token ~watch repos >>= fun () ->
+      State.import_webhook_events token ~events t.bridge
+
+  let update_datakit ?(retries=5) t tr =
     let rec aux n =
       assert (is_open tr);
-      let bridge = match webhook with
-        | None                   -> Lwt.return t.bridge
-        | Some { watch; events } ->
-          State.add_webhooks token ~watch repos >>= fun () ->
-          State.import_webhook_events token ~events t.bridge
-      in
-      bridge >>= fun bridge ->
-      State.import token bridge repos >>= fun bridge ->
-      let new_t = { t with bridge } in
-      commit new_t tr >>= fun commited ->
+      commit t tr >>= fun commited ->
       assert (is_closed tr);
-      if commited then Lwt.return new_t
+      if commited then Lwt.return t
       else (
         Log.info (fun l -> l "Cannot commit, retry sync (%d/%d)" n retries);
         if n = retries then aux (n+1)
         else Lwt.return t
       ) in
     aux 1
+
+  let call_github_api ~token t =
+    let datakit = Conv.snapshot t.datakit in
+    let diff = Snapshot.diff datakit t.bridge in
+    State.apply token diff
+
+  let sync ~token ~webhook t repos tr =
+    process_webhooks ~token ~webhook t repos >>= fun bridge ->
+    State.import token bridge repos >>= fun bridge ->
+    let t = { t with bridge } in
+    call_github_api ~token t >>= fun () ->
+    update_datakit t tr
 
   (* On startup, build the initial state by looking at the active
      repository in datakit. Import the new repositories and call the
@@ -136,25 +145,20 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
     create ~debug:"first-sync" ?old:None br >>= fun (tr, t) ->
     Log.debug (fun l -> l "[first_sync]@ %a" pp_state t);
     let repos = Snapshot.repos (Conv.snapshot t.datakit) in
-    (* FIXME: State.apply <something> *)
     if Repo.Set.is_empty repos then safe_abort tr >|= fun _ -> t
-    else sync ~token ~webhook t tr repos >|= fun t -> t
+    else sync ~token ~webhook t repos tr
 
   (* The main synchonisation function: it is called on every change in
      the datakit branch and when new webhook events are received. *)
   let sync_once ~token ~webhook old br =
     create ~debug:"sync-once" ~old br >>= fun (tr, t) ->
     Log.debug (fun l -> l "[sync_once]@;old:%a@;new:%a" pp_state old pp_state t);
-    let datakit = Conv.snapshot t.datakit in
-    let diff = Snapshot.diff datakit t.bridge in
-    State.apply token diff >>= fun () ->
     let repos =
-      Repo.Set.diff (Snapshot.repos datakit) (Snapshot.repos t.bridge)
+      Repo.Set.diff
+        (Snapshot.repos @@ Conv.snapshot t.datakit)
+        (Snapshot.repos t.bridge)
     in
-    assert (is_open tr);
-    sync ~token ~webhook t tr repos >|= fun t ->
-    assert (is_closed tr);
-    t
+    sync ~token ~webhook t repos tr
 
   type t = State of state | Starting
 

@@ -648,6 +648,7 @@ let diff: Diff.t Alcotest.testable =
   (module struct include Diff let equal x y = Diff.compare x y = 0 end)
 
 let counter: Counter.t Alcotest.testable = (module Counter)
+let capabilities: Capabilities.t Alcotest.testable = (module Capabilities)
 
 let mk_snapshot ?(repos=[]) ?(commits=[]) ?(status=[]) ?(prs=[]) ?(refs=[]) () =
   Snapshot.create
@@ -996,6 +997,32 @@ let test_basic_snapshot () =
     test_basic_snapshot_once random
   done
 
+let test_capabilities () =
+  let caps = [
+    "*:rw+";
+    "*:r,status[foo/bar]:w+";
+    "*:,pr:rw,status:w+";
+    "*:+,commit:,webhook:r+";
+  ] in
+  List.iter (fun str ->
+      let c = match Capabilities.parse str with
+        | `Ok c    -> c
+        | `Error e -> Alcotest.fail (str ^ ": " ^ e)
+      in
+      Alcotest.(check string) str str (Fmt.to_to_string Capabilities.pp c)
+    ) caps;
+  let caps = [
+    Capabilities.all;
+    Capabilities.none;
+    Capabilities.(with_owner all `Datakit (`Status ["foo";"bar"]));
+  ] in
+  List.iter (fun c ->
+      let str = Fmt.to_to_string Capabilities.pp c in
+      match Capabilities.parse str with
+      | `Ok d    -> Alcotest.(check capabilities) str c d
+      | `Error e -> Alcotest.fail (str ^ ": " ^ e)
+    ) caps
+
 let test_snapshot () =
   quiet_9p ();
   quiet_git ();
@@ -1177,9 +1204,12 @@ let test_events dk =
   expect_head branch >>*= fun head ->
   check (DK.Commit.tree head)
 
-let update_status br dir state =
+let update_status br commit context state =
   DK.Branch.with_transaction br (fun tr ->
-      let dir = dir / "status" / "foo" / "bar" / "baz" in
+      let dir =
+        root repo / "commit" / commit / "status" / "foo"
+        /@ Datakit_path.of_steps_exn context
+      in
       DK.Transaction.make_dirs tr dir >>*= fun () ->
       let state = Cstruct.of_string  (Status_state.to_string state ^ "\n") in
       DK.Transaction.create_or_replace_file tr ~dir "state" state >>*= fun () ->
@@ -1217,11 +1247,11 @@ let test_updates dk =
     gh.API.ctx;
 
   (* test status update *)
-  let dir = root repo / "commit" / "foo" in
+  let commit_foo = root repo / "commit" / "foo" in
   expect_head branch >>*= fun h ->
-  DK.Tree.exists_dir (DK.Commit.tree h) dir >>*= fun exists ->
+  DK.Tree.exists_dir (DK.Commit.tree h) commit_foo >>*= fun exists ->
   Alcotest.(check bool) "exist private commit/foo" true exists;
-  update_status branch dir `Pending >>*= fun () ->
+  update_status branch "foo" ["bar";"baz"] `Pending >>*= fun () ->
   sync b >>= fun b ->
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 2; refs = 1;
@@ -1258,13 +1288,11 @@ let test_updates dk =
   Alcotest.(check string) "update pr's title" "hahaha" pr.PR.title;
   Lwt.return_unit
 
-(*
 let test_startup dk =
-  let t = init status0 refs0 events1 in
-  let s = VG.empty in
-  DK.branch dk priv >>*= fun priv ->
-  DK.branch dk pub  >>*= fun pub ->
-  let sync s = VG.sync ~policy:`Once ~priv ~pub ~token:t s in
+  let gh = init_github status0 refs0 events1 in
+  let b = Bridge.empty in
+  DK.branch dk branch >>*= fun branch ->
+  let sync b = Bridge.sync ~policy:`Once ~token:gh branch b in
   let dir = root repo / "commit" / "foo" in
 
   (* start from scratch *)
@@ -1272,54 +1300,54 @@ let test_startup dk =
     { events = 0; prs = 0; status = 0; refs = 0;
       set_pr = 0; set_status = 0; set_ref = 0 }
     gh.API.ctx;
-  sync s >>= fun s ->
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
     gh.API.ctx;
-  update_status pub dir `Pending >>*= fun () ->
-  sync s >>= fun s ->
+  update_status branch "foo" ["bar";"baz"] `Pending >>*= fun () ->
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 3"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
     gh.API.ctx;
 
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun _s ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  sync b >>= fun _b ->
   Alcotest.(check counter) "counter: 3'"
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 1; set_ref = 0 }
     gh.API.ctx;
 
   (* restart *)
-  let s = VG.empty in
-  sync s >>= fun s ->
+  let b = Bridge.empty in
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 4"
     { events = 0; prs = 2; status = 4; refs = 2;
       set_pr = 0; set_status = 1; set_ref = 0 }
     gh.API.ctx;
-  sync s >>= fun s ->
-  sync s >>= fun _s ->
+  sync b >>= fun b ->
+  sync b >>= fun _b ->
   Alcotest.(check counter) "counter: 4'"
     { events = 0; prs = 2; status = 4; refs = 2;
       set_pr = 0; set_status = 1; set_ref = 0 }
     gh.API.ctx;
 
   (* restart with dirty public branch *)
-  let s = VG.empty in
-  update_status pub dir `Failure >>*= fun () ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
-  sync s >>= fun s ->
+  let b = Bridge.empty in
+  update_status branch "foo" ["bar";"baz"] `Failure >>*= fun () ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 5"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
     gh.API.ctx;
-  let status = find_status t repo in
+  let status = find_status gh repo in
   Alcotest.(check status_state) "update status" `Failure status.Status.state;
 
-  sync s >>= fun s ->
+  sync b >>= fun b ->
   Alcotest.(check counter) "counter: 6"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
@@ -1327,13 +1355,13 @@ let test_startup dk =
 
   (* changes done in the public branch are never overwritten
      FIXME: we might want to improve/change this in the future. *)
-  sync s >>= fun _s ->
+  sync b >>= fun _b ->
   Alcotest.(check counter) "counter: 7"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
     gh.API.ctx;
   let status_dir = dir / "status" / "foo" / "bar" / "baz" in
-  expect_head pub >>*= fun h ->
+  expect_head branch >>*= fun h ->
   let tree = DK.Commit.tree h in
   DK.Tree.exists_dir tree status_dir >>*= fun dir_exists ->
   Alcotest.(check bool) "dir exists" true dir_exists;
@@ -1343,7 +1371,7 @@ let test_startup dk =
   Alcotest.(check string) "webhook update" "failure\n" (Cstruct.to_string buf);
 
   Lwt.return_unit
-
+(*
 let users = (module Users : Alcotest.TESTABLE with type t = Users.t)
 
 let opt_read_file tree path =
@@ -1642,15 +1670,16 @@ let test_random_dk ~quick _repo conn =
 let runx f () = Test_utils.run f
 
 let test_set = [
-  "basic-snapshot"  , `Quick, test_basic_snapshot;
-  "snapshot"  , `Quick, test_snapshot;
+  "basic-snapshot", `Quick, test_basic_snapshot;
+  "snapshot"      , `Quick, test_snapshot;
+  "capabilities"  , `Quick, test_capabilities;
   "events"    , `Quick, run_with_test_test test_events;
   "updates"   , `Quick, run_with_test_test test_updates;
-  (*
   "startup"   , `Quick, run_with_test_test test_startup;
+(*
   "random-gh" , `Quick, runx (test_random_gh ~quick:true);
   "random-gh*", `Slow , runx (test_random_gh ~quick:false);
   "random-dk" , `Quick, runx (test_random_dk ~quick:true);
-   "random-dk*", `Slow , runx (test_random_dk ~quick:false);
+  "random-dk*", `Slow , runx (test_random_dk ~quick:false);
    *)
 ]

@@ -429,14 +429,20 @@ module Capabilities: sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for capabilities. *)
 
-  val of_string: string -> [ `Error of string | `Ok of t ]
-  (** [of_string s] is [Some t] if there exists [t] such that [s] is
-      the string representation of [t]; and [None] otherwise. *)
+  val equal: t -> t -> bool
+  (** [equal] equalizes capabilities. *)
+
+  val parse: string -> [ `Error of string | `Ok of t ]
+  (** [parse] is the parses capabilites, such that [parse
+      (Fmt.to_to_string pp x) = `Ok x]. *)
 
   type op = [`Read | `Write]
   (** The type for API operations. *)
 
-  type resource = [`PR | `Status | `Ref | `Webhook]
+  type owner = [`GitHub | `Datakit]
+  (** The type for resource owner. *)
+
+  type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
   (** The type for API resources. *)
 
   val none: t
@@ -445,11 +451,15 @@ module Capabilities: sig
   val all: t
   (** [all] is the capability to do everything. *)
 
-  val allow: t -> op -> [`All | resource] -> t
+  val with_owner: t -> owner -> [`Default | resource] -> t
+  (** [with_owner t o r] is [t] where the resource [r] is owned by
+      [o]. *)
+
+  val allow: t -> op -> [`Default | resource] -> t
   (** [allow t o r] is [t] with the capability to do API calls of type
       [o] to the kind of resource [r]. *)
 
-  val disallow: t -> op -> [`All | resource] -> t
+  val disallow: t -> op -> [`Default | resource] -> t
   (** [disallow t o r] is [t] without the capability to do API calls
       of type [o] to the kind of resource [r]. *)
 

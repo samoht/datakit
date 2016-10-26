@@ -713,9 +713,12 @@ module Snapshot = struct
     in
     Repo.Set.fold (fun r acc -> union acc (aux r)) t.repos empty
 
-  (* Compute the diff between old_s and new_s. *)
+  let pp_diff ppf t =
+    Fmt.pf ppf "@[[%a@;%a]@]"
+      (pp_field "update" Elt.Set.pp) t.update
+      (pp_field "remove" Elt.IdSet.pp) t.remove
+
   let diff x y =
-    Log.debug (fun l -> l "diff@;%a@;%a" pp x pp y);
     let mk t repos skip_pr skip_ref skip_status skip_commit =
       let neg f x = not (f x) in
       let prs = PR.Set.filter (neg skip_pr) t.prs in
@@ -742,7 +745,9 @@ module Snapshot = struct
       mk x repos skip_pr skip_ref skip_status skip_commit
       |> elts
     in
-    { remove; update }
+    let r = { remove; update } in
+    Log.debug (fun l -> l "Snapshot.diff@;x=%a@;y=%a@;r=%a" pp x pp y pp_diff r);
+    r
 
 end
 
@@ -761,10 +766,7 @@ module Diff = struct
     | 0 -> Elt.IdSet.compare x.remove y.remove
     | i -> i
 
-  let pp ppf t =
-    Fmt.pf ppf "@[[%a@;%a]@]"
-      (pp_field "update" Elt.Set.pp) t.update
-      (pp_field "remove" Elt.IdSet.pp) t.remove
+  let pp = Snapshot.pp_diff
 
   let commit_message t =
     let updates = Elt.Set.cardinal t.update in
@@ -797,13 +799,46 @@ end
 module Capabilities = struct
 
   type op = [`Read | `Write]
-  type resource = [`PR | `Status | `Ref | `Webhook]
+  type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
+  type owner = [`GitHub | `Datakit]
+
+  exception Error of string * string
+
+  let pp_resource ppf = function
+    | `PR        -> Fmt.string ppf "pr"
+    | `Commit    -> Fmt.string ppf "commit"
+    | `Status [] -> Fmt.pf ppf "status"
+    | `Status p  -> Fmt.pf ppf "status[%a]" pp_path p
+    | `Ref       -> Fmt.string ppf "ref"
+    | `Webhook   -> Fmt.string ppf "webhook"
+
+  let parse_resource = function
+    | "pr"      -> `PR
+    | "commit"  -> `Commit
+    | "status"  -> `Status []
+    | "ref"     -> `Ref
+    | "webhook" -> `Webhook
+    | "*"       -> `Default
+    | s         ->
+      match String.cut ~sep:"[" s with
+      | Some ("status", c) ->
+        (* remove trailing ']' *)
+        let c = String.with_range ~len:(String.length c - 1) c in
+        let c = String.cuts ~sep:"/" c in
+        `Status c
+      | _ -> raise (Error (s, "invalid resource"))
+
+  let pp_op ppf = function
+    | `Read  -> Fmt.string ppf "read"
+    | `Write -> Fmt.string ppf "write"
 
   module X = struct
 
-    type t = { read: bool; write: bool }
-    let none = { read = false; write = false }
-    let all = { read = true; write = true }
+    type t = { owner: owner; read: bool; write: bool }
+    let none = { owner = `GitHub; read = false; write = false }
+    let all = { owner = `GitHub; read = true; write = true }
+
+    let with_owner t owner = { t with owner }
 
     let allow t = function
       | `Read  -> { t with read  = true }
@@ -817,59 +852,102 @@ module Capabilities = struct
       | `Read  -> t.read
       | `Write -> t.write
 
-    let pp ppf = function
-      | { read = true ; write = true  } -> Fmt.string ppf "rw"
-      | { read = true ; write = false } -> Fmt.string ppf "r"
-      | { read = false; write = true  } -> Fmt.string ppf "w"
-      | { read = false; write = false } -> Fmt.string ppf ""
+    let pp_owner ppf = function
+      | `GitHub  -> Fmt.string ppf ""
+      | `Datakit -> Fmt.string ppf "+"
+
+    let pp_rw ppf = function
+      | (true , true ) -> Fmt.string ppf "rw"
+      | (true , false) -> Fmt.string ppf "r"
+      | (false, true ) -> Fmt.string ppf "w"
+      | (false, false) -> Fmt.string ppf ""
+
+    let pp ppf t =
+      Fmt.pf ppf "%a%a" pp_rw (t.read, t.write) pp_owner t.owner
+
+    let parse = function
+      | "rw+" -> { read = true ; write = true ; owner = `Datakit }
+      | "r+"  -> { read = true ; write = false; owner = `Datakit }
+      | "w+"  -> { read = false; write = true ; owner = `Datakit }
+      | "+"   -> { read = false; write = false; owner = `Datakit }
+      | "rw"  -> { read = true ; write = true ; owner = `GitHub  }
+      | "r"   -> { read = true ; write = false; owner = `GitHub  }
+      | "w"   -> { read = false; write = true ; owner = `GitHub  }
+      | ""    -> { read = false; write = false; owner = `GitHub  }
+      | s     -> raise (Error (s, "invalid capacity"))
 
   end
 
-  type t = { pr: X.t; status: X.t; ref: X.t; webhook: X.t }
+  type t = {
+    default: X.t;
+    extra  : (resource * X.t) list;
+  }
 
-  let none = { pr = X.none; status = X.none; ref = X.none; webhook = X.none }
-  let all = { pr = X.all; status = X.all; ref = X.all; webhook = X.all }
+  let sort_extra extra = List.sort (fun (x, _) (y, _) -> compare x y) extra
+
+  let equal x y =
+    x.default = y.default &&
+    List.length x.extra = List.length y.extra &&
+    List.for_all2
+      (fun (r1, x1) (r2, x2) -> r1 = r2 && x1 = x2)
+      (sort_extra x.extra) (sort_extra y.extra)
+
+  let create ?(extra=[]) default = { default; extra = sort_extra extra }
+
+  let none = create X.none
+  let all = create X.all
 
   let pp ppf t =
-    if t = all then Fmt.string ppf "*:rw"
-    else if t = none then Fmt.string ppf "*:"
-    else if t.pr = t.status && t.pr = t.ref && t.pr = t.webhook then
-      Fmt.pf ppf "*:%a" X.pp t.pr
+    if t.extra = [] then
+      Fmt.pf ppf "*:%a" X.pp t.default
     else
-      Fmt.pf ppf "pr:%a,status:%a,ref:%a,webhook:%a"
-        X.pp t.pr X.pp t.status X.pp t.ref X.pp t.webhook
+      let pp = Fmt.(pair ~sep:(unit ":")) pp_resource X.pp in
+      Fmt.pf ppf "*:%a,%a" X.pp t.default Fmt.(list ~sep:(unit ",") pp) t.extra
 
-  let pp_resource ppf = function
-    | `PR      -> Fmt.string ppf "pr"
-    | `Status  -> Fmt.string ppf "status"
-    | `Ref     -> Fmt.string ppf "ref"
-    | `Webhook -> Fmt.string ppf "webhook"
+  let parse_resource_ops s = match String.cut ~sep:":" s with
+    | None        -> raise (Error (s, "missing ':'"))
+    | Some (r, c) -> parse_resource r, X.parse c
 
-  let pp_op ppf = function
-    | `Read  -> Fmt.string ppf "read"
-    | `Write -> Fmt.string ppf "write"
+  let parse s =
+    try
+      let caps =
+        String.cuts ~sep:"," s
+        |> List.map parse_resource_ops
+      in
+      let default =
+        try List.find (fun (r, _) -> r = `Default) caps |> snd
+        with Not_found -> X.none
+      in
+      let extra = List.fold_left (fun acc -> function
+          | `Default, _       -> acc
+          | #resource as r, x -> (r, x) :: acc
+        ) [] caps
+      in
+      `Ok (create default ~extra)
+    with Error (s, msg) ->
+      Fmt.kstrf (fun e -> `Error e) "%s: %s" s msg
 
   let apply f t op = function
-    | `PR      -> { t with pr      = f t.pr op }
-    | `Status  -> { t with status  = f t.status op }
-    | `Ref     -> { t with ref     = f t.ref op }
-    | `Webhook -> { t with webhook = f t.webhook op }
-    | `All     ->
-      { pr      = f t.pr op;
-        status  = f t.status op;
-        ref     = f t.ref op;
-        webhook = f t.webhook op }
+    | `Default       -> { t with default = f t.default op }
+    | #resource as r ->
+      try
+        let x = List.assoc r t.extra in
+        let x = f x op in
+        let extra = List.filter (fun (s, _) -> s <> r) t.extra in
+        create t.default ~extra:((r, x) :: extra)
+      with Not_found ->
+        let x = f X.none op in
+        create t.default ~extra:((r, x) :: t.extra)
 
   let allow = apply X.allow
   let disallow = apply X.disallow
+  let with_owner = apply X.with_owner
 
-  let x t = function
-    | `PR      -> t.pr
-    | `Status  -> t.status
-    | `Ref     -> t.ref
-    | `Webhook -> t.webhook
+  let x t r =
+    try List.assoc r t.extra
+    with Not_found -> t.default
 
-  let check t op r =
+  let check t op (r:resource) =
     let allowed = X.check (x t r) op in
     if not allowed then
       Log.info (fun l ->
@@ -877,47 +955,6 @@ module Capabilities = struct
             pp_resource r pp_op op pp t
         );
     allowed
-
-  let resource_of_string = function
-    | "pr"      -> Some `PR
-    | "status"  -> Some `Status
-    | "ref"     -> Some `Ref
-    | "webhook" -> Some `Webhook
-    | "*"       -> Some `All
-    | s         -> Log.err (fun l -> l "%s is not a valid API resource" s); None
-
-  let ops_of_string = function
-    | ""   -> Some []
-    | "r"  -> Some [`Read]
-    | "w"  -> Some [`Write]
-    | "rw" -> Some [`Read; `Write]
-    | s    -> Log.err (fun l -> l "%s is not a valid operation" s); None
-
-  exception Error of string * string
-
-  let of_string s =
-    let aux s = match String.cut ~sep:":" s with
-      | None        -> raise (Error (s, "missing ':'"))
-      | Some (r, c) -> match resource_of_string r, ops_of_string c with
-        | None  , _      -> raise (Error (r, "wrong resource"))
-        | _     , None   -> raise (Error (c, "wrong capacity"))
-        | Some r, Some c -> r, c
-    in
-    let allows t cs r = List.fold_left (fun acc c -> allow acc c r) t cs in
-    let caps =
-      try String.cuts ~sep:"," s |> List.map aux |> fun s -> `Ok s
-      with Error (s, r) -> let err = Fmt.strf "%s: %s" s r in `Error err
-    in
-    match caps with
-    | `Error _ as e -> e
-    | `Ok caps ->
-      let all =
-        try List.find (fun (r, _) -> r = `Default) caps |> snd
-        with Not_found -> if caps = [] then [`Read; `Write] else []
-      in
-      List.fold_left
-        (fun acc (r, cs) -> allows acc cs r) (allows none all `All) caps
-      |> fun t -> `Ok t
 
 end
 
@@ -962,7 +999,7 @@ module State (API: API) = struct
   let status_of_commits token commits =
     let api_status token c =
       Log.info (fun l -> l "API.status %a" Commit.pp c);
-      if not (Capabilities.check token.c `Read `Status) then ok Status.Set.empty
+      if not (Capabilities.check token.c `Read `Commit) then ok Status.Set.empty
       else
         API.status token.t c >|= function
         | Error e   -> Error (c, e)
@@ -1064,7 +1101,8 @@ module State (API: API) = struct
 
   let api_set_status token s =
     Log.info (fun l -> l "API.set-status %a" Status.pp s);
-    if not (Capabilities.check token.c `Write `Status) then Lwt.return_unit
+    if not (Capabilities.check token.c `Write (`Status (Status.context s)))
+    then Lwt.return_unit
     else
       API.set_status token.t s >|= function
       | Ok ()   -> ()
