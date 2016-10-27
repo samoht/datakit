@@ -1025,8 +1025,10 @@ let test_capabilities () =
       Alcotest.(check capabilities) str c d
     ) caps;
   let checks = [
-    of_string "*:rw", `Read, `Status ["foo"], true;
-    of_string "*:w" , `Read, `PR, false;
+    of_string "*:rw", `Read , `Status ["foo"], true;
+    of_string "*:rw", `Write, `Status ["foo"], true;
+    of_string "*:w" , `Read , `PR, false;
+    of_string "*:w" , `Write, `PR, true;
     of_string "*:w,pr:r", `Read , `PR, true;
     of_string "*:w,pr:r", `Write, `PR, false;
     of_string "*:w,pr:r", `Read , `Commit, false;
