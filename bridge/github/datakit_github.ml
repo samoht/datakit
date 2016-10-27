@@ -798,7 +798,8 @@ end
 
 module Capabilities = struct
 
-  type op = [`Read | `Write]
+  type op = [`Read | `Write | `Excl ]
+
   type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
 
   exception Error of string * string
@@ -830,39 +831,46 @@ module Capabilities = struct
   let pp_op ppf = function
     | `Read  -> Fmt.string ppf "read"
     | `Write -> Fmt.string ppf "write"
+    | `Excl  -> Fmt.string ppf "excl"
 
   module X = struct
 
-    type t = { read: bool; write: bool }
-    let none = { read = false; write = false }
-    let all = { read = true; write = true }
+    type t = { read: bool; write: bool; excl: bool }
+    let none = { read = false; write = false; excl = false }
+    let all = { read = true; write = true; excl = false }
 
     let allow t = function
       | `Read  -> { t with read  = true }
       | `Write -> { t with write = true }
+      | `Excl  -> { t with excl  = true }
 
     let disallow t = function
       | `Read  -> { t with read  = false }
       | `Write -> { t with write = false }
+      | `Excl  -> { t with excl  = false }
 
     let check t = function
       | `Read  -> t.read
-      | `Write -> t.write
+      | `Write -> t.write || t.excl
+      | `Excl  -> t.excl
 
-    let pp_rw ppf = function
-      | (true , true ) -> Fmt.string ppf "rw"
-      | (true , false) -> Fmt.string ppf "r"
-      | (false, true ) -> Fmt.string ppf "w"
-      | (false, false) -> Fmt.string ppf ""
+    let pp_aux ppf (f, s) = match f with
+      | true  -> Fmt.string ppf s
+      | false -> Fmt.string ppf ""
 
-    let pp ppf t = pp_rw ppf (t.read, t.write)
+    let pp_r ppf t = pp_aux ppf (t.read , "r")
+    let pp_w ppf t = pp_aux ppf (t.write, "w")
+    let pp_l ppf t = pp_aux ppf (t.excl , "x")
 
-    let parse = function
-      | "rw" -> { read = true ; write = true  }
-      | "r"  -> { read = true ; write = false }
-      | "w"  -> { read = false; write = true  }
-      | ""   -> { read = false; write = false }
-      | s    -> raise (Error (s, "invalid capacity"))
+    let pp ppf t = Fmt.pf ppf "%a%a%a" pp_l t pp_r t pp_w t
+
+    let parse s =
+      String.fold_left (fun acc -> function
+          | 'x' -> { acc with excl  = true }
+          | 'r' -> { acc with read  = true }
+          | 'w' -> { acc with write = true }
+          | _   -> raise (Error (s, "invalid capacities"))
+        ) none s
 
   end
 

@@ -1027,16 +1027,28 @@ let test_capabilities () =
   let checks = [
     of_string "*:rw", `Read , `Status ["foo"], true;
     of_string "*:rw", `Write, `Status ["foo"], true;
+    of_string "*:rw", `Excl , `Status ["foo"], false;
     of_string "*:w" , `Read , `PR, false;
     of_string "*:w" , `Write, `PR, true;
+    of_string "*:w" , `Excl , `PR, false;
+    of_string "*:x" , `Read , `PR, false;
+    of_string "*:x" , `Write, `PR, true;
+    of_string "*:x" , `Excl , `PR, true;
     of_string "*:w,pr:r", `Read , `PR, true;
     of_string "*:w,pr:r", `Write, `PR, false;
+    of_string "*:w,pr:r", `Excl , `PR, false;
     of_string "*:w,pr:r", `Read , `Commit, false;
     of_string "*:w,pr:r", `Write, `Commit, true;
+    of_string "*:w,pr:r", `Excl , `Commit, false;
+    of_string "*:r,status[foo]:x,webhook:w", `Excl, `Status ["foo"], true;
   ]
   in
   List.iter (fun (c, op, r, b) ->
-      Alcotest.(check bool) (to_string c) b Capabilities.(check c op r)
+      let msg =
+        Fmt.strf "%a - %a - %a"
+          Capabilities.pp c Capabilities.pp_op op Capabilities.pp_resource r
+      in
+      Alcotest.(check bool) msg b Capabilities.(check c op r)
     ) checks
 
 let test_snapshot () =

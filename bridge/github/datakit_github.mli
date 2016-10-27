@@ -436,11 +436,30 @@ module Capabilities: sig
   (** [parse] is the parses capabilites, such that [parse
       (Fmt.to_to_string pp x) = `Ok x]. *)
 
-  type op = [`Read | `Write]
-  (** The type for API operations. *)
+  type op = [`Read | `Write | `Excl]
+  (** The type for API operations.
+      {ul
+      {- [`Read] allows the bridge to read the corresponding kind of
+         GitHub resources}
+      {- [`Write] allows the bridge to update the corresponding kind
+         of resource.}
+      {- [`Excl] means that the bridge has exclusive write access
+         to the corresponding GitHub resource. In particular, this
+         means that when the bridge is disconnect/reconnect it will
+         always try to update GitHub to match with the current state
+         of its local resources and it will revert any changes made
+         by other GitHub users on this kind of resources.}
+      ul}
+  *)
+
+  val pp_op: op Fmt.t
+  (** [pp_op] is the pretty-printer for resource operations. *)
 
   type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
   (** The type for API resources. *)
+
+  val pp_resource: resource Fmt.t
+  (** [pp_resource] is the pretty-printer for resources. *)
 
   val none: t
   (** [none] is the capability to do nothing. *)
