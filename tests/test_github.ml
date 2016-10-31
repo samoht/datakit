@@ -1041,6 +1041,9 @@ let test_capabilities () =
     of_string "*:w,pr:r", `Write, `Commit, true;
     of_string "*:w,pr:r", `Excl , `Commit, false;
     of_string "*:r,status[foo]:x,webhook:w", `Excl, `Status ["foo"], true;
+    of_string "status[foo/bar]:r", `Read, `Status ["foo";"bar";"0"], true;
+    of_string "status[foo]:r,status[foo/bar]:w",
+    `Write, `Status ["foo";"bar";"0"], true;
   ]
   in
   List.iter (fun (c, op, r, b) ->

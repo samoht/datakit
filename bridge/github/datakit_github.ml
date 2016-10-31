@@ -938,9 +938,28 @@ module Capabilities = struct
   let allow = apply X.allow
   let disallow = apply X.disallow
 
-  let x t r =
-    try List.assoc r t.extra
-    with Not_found -> t.default
+  let rec starts_with ~prefix l = match prefix, l with
+    | []  , _    -> true
+    | _   , []   -> false
+    | a::b, c::d -> a=c && starts_with ~prefix:b d
+
+  let x t = function
+    | `Status l ->
+      (try
+         List.fold_left (fun (n, _ as acc) (k, v) -> match k with
+             | `Status prefix when
+                 starts_with ~prefix l && List.length prefix > n
+                 -> (List.length prefix, Some v)
+             | _ -> acc
+           ) (0, None) t.extra
+         |> function
+         | _, None   -> t.default
+         | _, Some x -> x
+       with Not_found ->
+         t.default)
+    | r ->
+      try List.assoc r t.extra
+      with Not_found -> t.default
 
   let check t op (r:resource) =
     let allowed = X.check (x t r) op in
