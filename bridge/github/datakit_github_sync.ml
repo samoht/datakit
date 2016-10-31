@@ -128,7 +128,10 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
 
   let call_github_api ~token t =
     let datakit = Conv.snapshot t.datakit in
-    let diff = Snapshot.diff datakit t.bridge in
+    let diff =
+      Snapshot.diff datakit t.bridge
+      |> Capabilities.filter_diff (State.capabilities token) `Excl
+    in
     Log.debug (fun l -> l "call_github_api: %a" Diff.pp diff);
     State.apply token diff
 
