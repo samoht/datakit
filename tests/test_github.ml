@@ -1000,9 +1000,10 @@ let test_basic_snapshot () =
 let test_capabilities () =
   let caps = [
     "*:rw";
+    "repo:r,repo[samoht]:w";
     "*:r,status[foo/bar]:w";
-    "*:,pr:rw,status:w";
-    "*:,commit:,webhook:r";
+    "pr:rw,status:w";
+    "*:w,commit:,webhook:r";
   ] in
   let of_string str = match Capabilities.parse str with
     | `Ok c    -> c
@@ -1034,6 +1035,8 @@ let test_capabilities () =
     of_string "*:x" , `Read , `PR, false;
     of_string "*:x" , `Write, `PR, true;
     of_string "*:x" , `Excl , `PR, true;
+    of_string "repo[samoht]:w,repo:r", `Read , `Repo ["samoht";"test"], false;
+    of_string "repo[samoht]:w,repo:r", `Write, `Repo ["samoht";"test"], true;
     of_string "*:w,pr:r", `Read , `PR, true;
     of_string "*:w,pr:r", `Write, `PR, false;
     of_string "*:w,pr:r", `Excl , `PR, false;

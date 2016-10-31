@@ -455,7 +455,14 @@ module Capabilities: sig
   val pp_op: op Fmt.t
   (** [pp_op] is the pretty-printer for resource operations. *)
 
-  type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
+  type resource = [
+    | `Repo of string list
+    | `PR
+    | `Commit
+    | `Status of string list
+    | `Ref
+    | `Webhook
+  ]
   (** The type for API resources. *)
 
   val pp_resource: resource Fmt.t
@@ -478,6 +485,11 @@ module Capabilities: sig
   val check: t -> op -> resource -> bool
   (** [check t o r] is true if [t] is allowed to to [o] on the kind of
       resource [r]. *)
+
+  val filter_diff: t -> op -> Snapshot.diff -> Snapshot.diff
+  (** [filter_diff t op d] filters the diff [d] to only apply the
+      subset of operations [op] over the capabilities defined by
+      [t]. *)
 
 end
 
@@ -566,12 +578,19 @@ end
 (** API State: TODO find a better name? *)
 module State (API: API): sig
 
+  (** {1 Token} *)
+
   type token
   (** The type for state token. *)
 
   val token: API.token -> Capabilities.t -> token
   (** [token t c] is the token using the GitHub API token [t] limited
       by the capabilities [c]. *)
+
+  val capabilities: token -> Capabilities.t
+  (** [capabilities t] is the token [t]'s capabilities. *)
+
+  (** {1 Synchronisation} *)
 
   val import: token -> Snapshot.t -> Repo.Set.t -> Snapshot.t Lwt.t
   (** [import ~token t r] imports the state of GitHub for the
@@ -580,6 +599,8 @@ module State (API: API): sig
   val apply: token -> Diff.t -> unit Lwt.t
   (** [apply ~token d] applies the snapshot diff [d] as a series of
       GitHub API calls, using the token [token]. *)
+
+  (** {1 Webhooks} *)
 
   val add_webhooks:
     token -> watch:(Repo.t -> unit Lwt.t) -> Repo.Set.t -> unit Lwt.t

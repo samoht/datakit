@@ -800,33 +800,50 @@ module Capabilities = struct
 
   type op = [`Read | `Write | `Excl ]
 
-  type resource = [`PR | `Commit | `Status of string list | `Ref | `Webhook]
+  type resource = [
+    | `Repo of string list
+    | `PR
+    | `Commit
+    | `Status of string list
+    | `Ref
+    | `Webhook
+  ]
 
   exception Error of string * string
 
   let pp_resource ppf = function
+    | `Repo []   -> Fmt.string ppf "repo"
+    | `Repo p    -> Fmt.pf ppf "repo[%a]" pp_path p
     | `PR        -> Fmt.string ppf "pr"
     | `Commit    -> Fmt.string ppf "commit"
-    | `Status [] -> Fmt.pf ppf "status"
+    | `Status [] -> Fmt.string ppf "status"
     | `Status p  -> Fmt.pf ppf "status[%a]" pp_path p
     | `Ref       -> Fmt.string ppf "ref"
     | `Webhook   -> Fmt.string ppf "webhook"
 
+  let parse_kv s =
+    match String.cut ~sep:"[" s with
+    | Some (s, c) ->
+      (* remove trailing ']' *)
+      let c = String.with_range ~len:(String.length c - 1) c in
+      let c = String.cuts ~sep:"/" c in
+      Some (s, c)
+    | _ ->
+      None
+
   let parse_resource = function
     | "pr"      -> `PR
     | "commit"  -> `Commit
+    | "repo"    -> `Repo []
     | "status"  -> `Status []
     | "ref"     -> `Ref
     | "webhook" -> `Webhook
     | "*"       -> `Default
     | s         ->
-      match String.cut ~sep:"[" s with
-      | Some ("status", c) ->
-        (* remove trailing ']' *)
-        let c = String.with_range ~len:(String.length c - 1) c in
-        let c = String.cuts ~sep:"/" c in
-        `Status c
-      | _ -> raise (Error (s, "invalid resource"))
+      match parse_kv s with
+      | Some ("status", l) -> `Status l
+      | Some ("repo"  , l) -> `Repo l
+      | _                  -> raise (Error (s, "invalid resource"))
 
   let pp_op ppf = function
     | `Read  -> Fmt.string ppf "read"
@@ -894,11 +911,18 @@ module Capabilities = struct
   let all = create X.all
 
   let pp ppf t =
-    if t.extra = [] then
+    let pp_one = Fmt.(pair ~sep:(unit ":")) pp_resource X.pp in
+    let pp = Fmt.(list ~sep:(unit ",")) pp_one in
+    let extra =
+      if t.default <> X.none then t.extra
+      else List.filter (fun (_, v) -> v <> X.none)  t.extra
+    in
+    if extra = [] then
       Fmt.pf ppf "*:%a" X.pp t.default
+    else if t.default = X.none then
+      Fmt.pf ppf "%a" pp extra
     else
-      let pp = Fmt.(pair ~sep:(unit ":")) pp_resource X.pp in
-      Fmt.pf ppf "*:%a,%a" X.pp t.default Fmt.(list ~sep:(unit ",") pp) t.extra
+      Fmt.pf ppf "*:%a,%a" X.pp t.default pp extra
 
   let parse_resource_ops s = match String.cut ~sep:":" s with
     | None        -> raise (Error (s, "missing ':'"))
@@ -943,23 +967,32 @@ module Capabilities = struct
     | _   , []   -> false
     | a::b, c::d -> a=c && starts_with ~prefix:b d
 
+  let find_longuest_prefix l default extra =
+      List.fold_left (fun (n, _ as acc) (k, v) -> match k with
+        | prefix when starts_with ~prefix l && List.length prefix > n
+          -> (List.length prefix, Some v)
+        | _ -> acc
+      ) (0, None) extra
+      |> function
+      | _, None   -> default
+      | _, Some s -> s
+
+  let statuses t =
+    List.fold_left (fun acc -> function
+        | (`Status s, v) -> (s, v) :: acc
+        | _ -> acc
+      ) [] t.extra
+
+  let repos t =
+    List.fold_left (fun acc -> function
+        | (`Repo r, v) -> (r, v) :: acc
+        | _ -> acc
+      ) [] t.extra
+
   let x t = function
-    | `Status l ->
-      (try
-         List.fold_left (fun (n, _ as acc) (k, v) -> match k with
-             | `Status prefix when
-                 starts_with ~prefix l && List.length prefix > n
-                 -> (List.length prefix, Some v)
-             | _ -> acc
-           ) (0, None) t.extra
-         |> function
-         | _, None   -> t.default
-         | _, Some x -> x
-       with Not_found ->
-         t.default)
-    | r ->
-      try List.assoc r t.extra
-      with Not_found -> t.default
+    | `Status l -> find_longuest_prefix l t.default (statuses t)
+    | `Repo r   -> find_longuest_prefix r t.default (repos t)
+    | r         -> try List.assoc r t.extra with Not_found -> t.default
 
   let check t op (r:resource) =
     let allowed = X.check (x t r) op in
@@ -969,6 +1002,29 @@ module Capabilities = struct
             pp_resource r pp_op op pp t
         );
     allowed
+
+  let filter_aux t op = function
+    | `Commit _ -> X.check (x t `Commit) op
+    | `PR _     -> X.check (x t `PR) op
+    | `Ref _    -> X.check (x t `Ref) op
+    | `Repo r   ->
+      let { Repo.user; repo } = r in
+      X.check (x t (`Repo [repo; user])) op
+
+  let filter_elt t op (e:Elt.t) = match e with
+    | `Commit _ | `PR _ | `Ref _ | `Repo _ as x -> filter_aux t op x
+    | `Status s -> X.check (x t (`Status (Status.context s))) op
+
+  let filter_elt_id t op (e:Elt.id) = match e with
+    | `Commit _ | `PR _ | `Ref _ | `Repo _ as x -> filter_aux t op x
+    | `Status s -> X.check (x t (`Status (snd s))) op
+
+  let filter_diff t op diff =
+    let update = Elt.Set.filter (filter_elt t op) diff.Snapshot.update in
+    let remove =
+      Elt.IdSet.filter (filter_elt_id t op) diff.Snapshot.remove
+    in
+    { Snapshot.update; remove }
 
 end
 
@@ -1009,6 +1065,7 @@ module State (API: API) = struct
 
   let token t c = { t; c }
   let ok x = Lwt.return (Ok x)
+  let capabilities t = t.c
 
   let status_of_commits token commits =
     let api_status token c =
