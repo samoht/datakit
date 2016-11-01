@@ -68,7 +68,6 @@ module R = struct
     in
     { r with prs; commits }
 
-  let is_empty t = t.commits = [] && t.prs = [] && t.refs = []
   let events t = t.events
   let clear t = t.events <- []
 
@@ -507,8 +506,6 @@ module API = struct
     let t = { users; ctx = Counter.zero () } in
     List.iter (add_event t) events;
     t
-
-  let all_events t = fold (fun u acc -> User.events u @ acc) t []
 
   let all_repos t =
     fold (fun u acc -> Repo.Set.union (User.repos u) acc) t Repo.Set.empty
@@ -1407,7 +1404,7 @@ let test_startup dk =
   Alcotest.(check string) "webhook update" "failure\n" (Cstruct.to_string buf);
 
   Lwt.return_unit
-(*
+
 let users = (module Users : Alcotest.TESTABLE with type t = Users.t)
 
 let opt_read_file tree path =
@@ -1563,23 +1560,21 @@ let ensure_github_in_sync ~msg github pub_users =
   Lwt.return ()
 
 let all_repos =
-  List.fold_left (fun acc user ->
-      List.fold_left (fun acc repo ->
+  Array.fold_left (fun acc user ->
+      Array.fold_left (fun acc repo ->
           Repo.Set.add {Repo.user; repo} acc
-        ) acc test_repo
-    ) Repo.Set.empty test_user
+        ) acc Data.repos
+    ) Repo.Set.empty Data.users
 
 exception DK_error of DK.error
 
 let monitor repos pub =
   DK.Branch.with_transaction pub (fun t ->
       let monitor ~user ~repo =
-        Conv.update_repo t `Monitored { Repo.user; repo }
+        Conv.update_elt t (`Repo { Repo.user; repo })
       in
       Lwt_list.iter_p (fun { Repo.user; repo } ->
-          monitor ~user ~repo >>= function
-          | Error e -> Lwt.fail (DK_error e)
-          | Ok ()   -> Lwt.return_unit
+          monitor ~user ~repo
         ) repos
       >>= fun () ->
       DK.Transaction.commit t ~message:"Monitor repos"
@@ -1588,17 +1583,19 @@ let monitor repos pub =
 let random_monitor ~random pub =
   DK.Branch.with_transaction pub (fun t ->
       let monitor ~user ~repo =
-        let s = if Random.State.bool random then `Monitored else `Ignored in
-        Conv.update_repo t s { Repo.user; repo }
+        let elt = `Repo { Repo.user; repo } in
+        match Random.State.bool random with
+        | true  -> Conv.update_elt t elt
+        | false -> Conv.remove_elt t elt
       in
       Lwt_list.iter_p (fun { Repo.user; repo } ->
-          monitor ~user ~repo >>= function
-          | Error e -> Lwt.fail (DK_error e)
-          | Ok ()   -> Lwt.return_unit
+          monitor ~user ~repo
         ) (Repo.Set.elements all_repos)
       >>= fun () ->
       DK.Transaction.commit t ~message:"Monitor repos"
-    )
+    ) >>= function
+  | Ok ()   -> Lwt.return_unit
+  | Error e -> Lwt.fail_with @@ Fmt.to_to_string DK.pp_error e
 
 let test_random_gh ~quick _repo conn =
   quiet_9p ();
@@ -1606,47 +1603,46 @@ let test_random_gh ~quick _repo conn =
   quiet_irmin ();
   let random = Random.State.make [| 1; 2; 3 |] in
   let dk = DK.connect conn in
-  DK.branch dk pub  >>*= fun pub ->
-  DK.branch dk priv >>*= fun priv ->
-  let sync (t, s) =
-    let w = API.Webhook.v t in
-    random_monitor ~random pub >>*= fun () ->
-    VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >|= fun s ->
+  DK.branch dk branch >>*= fun branch ->
+  let sync (gh, b) =
+    let w = API.Webhook.v gh in
+    random_monitor ~random branch >>= fun () ->
+    Bridge.sync ~policy:`Once ~token:gh ~webhook:w branch b >|= fun b ->
     Alcotest.(check int) "API.set-*" 0 (Counter.sets gh.API.ctx);
-    s
+    b
   in
-  let nsync ~fresh n (t, s) =
-    let rec aux k (t, s) =
-      let s = if fresh then VG.empty else s  in
+  let nsync ~fresh n (gh, b) =
+    let rec aux k (gh, b) =
+      let b = if fresh then Bridge.empty else b in
       let t =
-        let users = random_users ~random ~old:gh.API.users in
+        let users = Gen.users ~random ~old:gh.API.users in
         let events = Users.diff_events users gh.API.users in
         API.create ~events users
       in
       let w = API.Webhook.v t in
-      random_monitor ~random pub >>*= fun () ->
-      VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >>= fun s ->
+      random_monitor ~random branch >>= fun () ->
+      Bridge.sync ~policy:`Once ~token:gh ~webhook:w branch b >>= fun b ->
       Alcotest.(check int) "API.set-*" 0 (Counter.sets gh.API.ctx);
       let msg = Fmt.strf "update %d (fresh=%b)" (n - k + 1) fresh in
-      ensure_pub_in_sync ~msg t pub >>= fun () ->
-      if k > 1 then aux (k-1) (t, s) else Lwt.return (t, s)
+      ensure_pub_in_sync ~msg t branch >>= fun () ->
+      if k > 1 then aux (k-1) (gh, b) else Lwt.return (gh, b)
     in
-    aux n (t, s)
+    aux n (gh, b)
   in
-  let t = API.create (random_users ~random ?old:None) in
-  sync (t, VG.empty) >>= fun _ ->
-  ensure_pub_in_sync ~msg:"init" t pub >>= fun () ->
-  let t = API.create (random_users ~random ~old:gh.API.users) in
-  sync (t, VG.empty) >>= fun s ->
-  ensure_pub_in_sync ~msg:"update" t pub >>= fun () ->
-  nsync ~fresh:false (if quick then 2 else 10) (t, s) >>= fun (t, s) ->
-  nsync ~fresh:true (if quick then 2 else 30)  (t, s) >>= fun (t, s) ->
-  nsync ~fresh:false (if quick then 2 else 20) (t, s) >>= fun (t, s) ->
-  let users = Users.of_repos (API.all_repos t) in
+  let gh = API.create (Gen.users ~random ?old:None) in
+  sync (gh, Bridge.empty) >>= fun _ ->
+  ensure_pub_in_sync ~msg:"init" gh branch >>= fun () ->
+  let gh = API.create (Gen.users ~random ~old:gh.API.users) in
+  sync (gh, Bridge.empty) >>= fun b ->
+  ensure_pub_in_sync ~msg:"update" gh branch >>= fun () ->
+  nsync ~fresh:false (if quick then 2 else 10) (gh, b) >>= fun (gh, b) ->
+  nsync ~fresh:true (if quick then 2 else 30)  (gh, b) >>= fun (gh, b) ->
+  nsync ~fresh:false (if quick then 2 else 20) (gh, b) >>= fun (gh, b) ->
+  let users = Users.of_repos (API.all_repos gh) in
   let events = Users.diff_events users gh.API.users in
   let t = API.create ~events users in
-  sync (t, s) >>= fun _s ->
-  ensure_pub_in_sync ~msg:"empty" t pub >>= fun () ->
+  sync (gh, b) >>= fun _s ->
+  ensure_pub_in_sync ~msg:"empty" t branch >>= fun () ->
   Lwt.return_unit
 
 let test_random_dk ~quick _repo conn =
@@ -1655,40 +1651,37 @@ let test_random_dk ~quick _repo conn =
   quiet_irmin ();
   let random = Random.State.make [| 1; 2; 3 |] in
   let dk = DK.connect conn in
-  DK.branch dk pub  >>*= fun pub ->
-  DK.branch dk priv >>*= fun priv ->
-  VG.sync ~policy:`Once VG.empty ~pub ~priv ~token:(API.create (Users.empty ()))
+  DK.branch dk branch  >>*= fun branch ->
+  Bridge.sync
+    ~policy:`Once ~token:(API.create (Users.empty ()))
+    branch Bridge.empty
   >>= fun _ ->
   let update_pub users =
     let events = Users.diff_events users (Users.empty ()) in
-    DK.Branch.with_transaction pub (fun tr ->
+    DK.Branch.with_transaction branch (fun tr ->
         Lwt_list.iter_s (fun { Repo.user; repo } ->
             safe_remove tr Datakit_path.(empty / repo / user)
           ) (Repo.Set.elements all_repos)
         >>= fun () ->
-        Lwt_list.iter_s (fun e ->
-            Conv.update_event tr e >>= function
-            | Error e -> Lwt.fail (DK_error e)
-            | Ok ()   -> Lwt.return_unit
-          ) events >>= fun () ->
+        Lwt_list.iter_s (Conv.update_event tr) events >>= fun () ->
         DK.Transaction.commit tr ~message:"User updates"
       ) >>= function
     | Error e -> Lwt.fail (DK_error e)
     | Ok ()   -> Lwt.return_unit
   in
   let prune = Users.prune all_repos in
-  let sync msg users (s, t) =
+  let sync msg users (b, gh) =
     update_pub users >>= fun () ->
-    monitor (Repo.Set.elements (Users.repos users)) pub >>*= fun () ->
-    let w = API.Webhook.v t in
-    VG.sync ~policy:`Once s ~pub ~priv ~token:t ~webhook:w >>= fun s ->
+    monitor (Repo.Set.elements (Users.repos users)) branch >>*= fun () ->
+    let w = API.Webhook.v gh in
+    Bridge.sync ~policy:`Once ~token:gh ~webhook:w branch b >>= fun b ->
     Log.debug (fun l -> l "API.set-* = %d" (Counter.sets gh.API.ctx));
-    ensure_github_in_sync ~msg t (prune users) >|= fun () ->
-    (s, t)
+    ensure_github_in_sync ~msg gh (prune users) >|= fun () ->
+    (b, gh)
   in
   let nsync n users x =
     let rec aux k users x =
-      let users = random_users ~random ~old:users in
+      let users = Gen.users ~random ~old:users in
       let msg = Fmt.strf "update %d" (n - k + 1) in
       sync msg users x >>= fun x ->
       if k > 1 then aux (k-1) users x else Lwt.return x
@@ -1696,12 +1689,10 @@ let test_random_dk ~quick _repo conn =
     aux n users x
   in
   let users = Users.empty () in
-  let x = VG.empty, API.create (Users.empty ()) in
+  let x = Bridge.empty, API.create (Users.empty ()) in
   sync "init" users x >>= fun s ->
   nsync (if quick then 3 else 30) (Users.empty ()) s
   >|= ignore
-
-*)
 
 let runx f () = Test_utils.run f
 
@@ -1712,10 +1703,8 @@ let test_set = [
   "events"    , `Quick, run_with_test_test test_events;
   "updates"   , `Quick, run_with_test_test test_updates;
   "startup"   , `Quick, run_with_test_test test_startup;
-(*
   "random-gh" , `Quick, runx (test_random_gh ~quick:true);
   "random-gh*", `Slow , runx (test_random_gh ~quick:false);
   "random-dk" , `Quick, runx (test_random_dk ~quick:true);
   "random-dk*", `Slow , runx (test_random_dk ~quick:false);
-   *)
 ]
