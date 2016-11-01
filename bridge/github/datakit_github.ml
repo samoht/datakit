@@ -866,11 +866,6 @@ module Capabilities = struct
       | `Write -> { t with write = false }
       | `Excl  -> { t with excl  = false }
 
-    let check t = function
-      | `Read  -> t.read
-      | `Write -> t.write || t.excl
-      | `Excl  -> t.excl
-
     let pp_aux ppf (f, s) = match f with
       | true  -> Fmt.string ppf s
       | false -> Fmt.string ppf ""
@@ -888,6 +883,15 @@ module Capabilities = struct
           | 'w' -> { acc with write = true }
           | _   -> raise (Error (s, "invalid capacities"))
         ) none s
+
+    let check t op =
+      let r = match op with
+      | `Read  -> t.read  || t.excl
+      | `Write -> t.write || t.excl
+      | `Excl  -> t.excl
+      in
+      Log.debug (fun l -> l "X.check %a %a %b" pp t pp_op op r);
+      r
 
   end
 
@@ -989,7 +993,9 @@ module Capabilities = struct
         | _ -> acc
       ) [] t.extra
 
-  let x t = function
+  let x t r =
+    Log.debug (fun l -> l "XXX t=%a r=%a" pp t pp_resource r);
+    match r with
     | `Status l -> find_longuest_prefix l t.default (statuses t)
     | `Repo r   -> find_longuest_prefix r t.default (repos t)
     | r         -> try List.assoc r t.extra with Not_found -> t.default
@@ -1066,6 +1072,7 @@ module State (API: API) = struct
   let token t c = { t; c }
   let ok x = Lwt.return (Ok x)
   let capabilities t = t.c
+  let with_capabilities c t = { t with c }
 
   let status_of_commits token commits =
     let api_status token c =
@@ -1074,7 +1081,13 @@ module State (API: API) = struct
       else
         API.status token.t c >|= function
         | Error e   -> Error (c, e)
-        | Ok status -> Ok (Status.Set.of_list status)
+        | Ok status ->
+          let status =
+            List.filter (fun s ->
+                Capabilities.filter_elt token.c `Read (`Status s)
+              ) status
+          in
+          Ok (Status.Set.of_list status)
     in
     Lwt_list.map_p (api_status token) (Commit.Set.elements commits)
     >|= fun status ->

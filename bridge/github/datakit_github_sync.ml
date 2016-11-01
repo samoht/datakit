@@ -126,20 +126,24 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
       ) in
     aux 1
 
-  let call_github_api ~token t =
+  let call_github_api ~token ~first_sync t =
+    let caps = State.capabilities token in
+    Log.debug (fun l -> l "XXX caps=%a" Capabilities.pp caps);
     let datakit = Conv.snapshot t.datakit in
-    let diff =
-      Snapshot.diff datakit t.bridge
-      |> Capabilities.filter_diff (State.capabilities token) `Excl
-    in
-    Log.debug (fun l -> l "call_github_api: %a" Diff.pp diff);
-    State.apply token diff
+    let op = if first_sync then `Excl else `Write in
+    let full_diff = Snapshot.diff datakit t.bridge in
+    let diff = Capabilities.filter_diff caps op full_diff in
+    Log.debug
+      (fun l -> l "call_github_api: %a %a" Diff.pp full_diff Diff.pp diff);
+    State.apply token diff >|= fun () ->
+    let bridge = Diff.apply diff t.bridge in
+    { t with bridge }
 
-  let sync ~token ~webhook t repos tr =
+  let sync ~token ~webhook ~first_sync t repos tr =
     process_webhooks ~token ~webhook t repos >>= fun bridge ->
     State.import token bridge repos >>= fun bridge ->
     let t = { t with bridge } in
-    call_github_api ~token t >>= fun () ->
+    call_github_api ~token ~first_sync t >>= fun t ->
     update_datakit t tr
 
   (* On startup, build the initial state by looking at the active
@@ -150,7 +154,7 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
     Log.debug (fun l -> l "[first_sync]@ %a" pp_state t);
     let repos = Snapshot.repos (Conv.snapshot t.datakit) in
     if Repo.Set.is_empty repos then safe_abort tr >|= fun _ -> t
-    else sync ~token ~webhook t repos tr
+    else sync ~token ~webhook ~first_sync:true t repos tr
 
   (* The main synchonisation function: it is called on every change in
      the datakit branch and when new webhook events are received. *)
@@ -162,7 +166,7 @@ module Make (API: API) (DK: Datakit_S.CLIENT) = struct
         (Snapshot.repos @@ Conv.snapshot t.datakit)
         (Snapshot.repos t.bridge)
     in
-    sync ~token ~webhook t repos tr
+    sync ~token ~webhook ~first_sync:false t repos tr
 
   type t = State of state | Starting
 

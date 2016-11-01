@@ -550,6 +550,7 @@ module API = struct
 end
 
 module Bridge = Datakit_github_sync.Make(API)(DK)
+module State = Datakit_github.State(API)
 
 let user = "test"
 let repo = "test"
@@ -1032,7 +1033,7 @@ let test_capabilities () =
     of_string "*:w" , `Read , `PR, false;
     of_string "*:w" , `Write, `PR, true;
     of_string "*:w" , `Excl , `PR, false;
-    of_string "*:x" , `Read , `PR, false;
+    of_string "*:x" , `Read , `PR, true;
     of_string "*:x" , `Write, `PR, true;
     of_string "*:x" , `Excl , `PR, true;
     of_string "repo[samoht]:w,repo:r", `Read , `Repo ["samoht";"test"], false;
@@ -1241,7 +1242,7 @@ let test_events dk =
 let update_status br commit context state =
   DK.Branch.with_transaction br (fun tr ->
       let dir =
-        root repo / "commit" / commit / "status" / "foo"
+        root repo / "commit" / commit / "status"
         /@ Datakit_path.of_steps_exn context
       in
       DK.Transaction.make_dirs tr dir >>*= fun () ->
@@ -1285,7 +1286,7 @@ let test_updates dk =
   expect_head branch >>*= fun h ->
   DK.Tree.exists_dir (DK.Commit.tree h) commit_foo >>*= fun exists ->
   Alcotest.(check bool) "exist private commit/foo" true exists;
-  update_status branch "foo" ["bar";"baz"] `Pending >>*= fun () ->
+  update_status branch "foo" ["foo"; "bar";"baz"] `Pending >>*= fun () ->
   sync b >>= fun b ->
   Alcotest.(check counter) "counter: 2"
     { events = 0; prs = 1; status = 2; refs = 1;
@@ -1326,7 +1327,13 @@ let test_startup dk =
   let gh = init_github status0 refs0 events1 in
   let b = Bridge.empty in
   DK.branch dk branch >>*= fun branch ->
-  let sync b = Bridge.sync ~policy:`Once ~token:gh branch b in
+  let sync ?cap b =
+    let cap = match cap with
+      | None   -> None
+      | Some s -> match Capabilities.parse s with `Ok s -> Some s | _ -> None
+    in
+    Bridge.sync ~policy:`Once ~token:gh ?cap branch b
+  in
   let dir = root repo / "commit" / "foo" in
 
   (* start from scratch *)
@@ -1339,7 +1346,7 @@ let test_startup dk =
     { events = 0; prs = 1; status = 2; refs = 1;
       set_pr = 0; set_status = 0; set_ref = 0 }
     gh.API.ctx;
-  update_status branch "foo" ["bar";"baz"] `Pending >>*= fun () ->
+  update_status branch "foo" ["foo"; "bar";"baz"] `Pending >>*= fun () ->
   sync b >>= fun b ->
   Alcotest.(check counter) "counter: 3"
     { events = 0; prs = 1; status = 2; refs = 1;
@@ -1368,12 +1375,13 @@ let test_startup dk =
       set_pr = 0; set_status = 1; set_ref = 0 }
     gh.API.ctx;
 
-  (* restart with dirty public branch *)
+  (* restart with dirty public branch + exclusive access  *)
   let b = Bridge.empty in
-  update_status branch "foo" ["bar";"baz"] `Failure >>*= fun () ->
-  sync b >>= fun b ->
-  sync b >>= fun b ->
-  sync b >>= fun b ->
+  let cap = "*:r,status[foo/bar/baz]:x" in
+  update_status branch "foo" ["foo"; "bar";"baz"] `Failure >>*= fun () ->
+  sync ~cap b >>= fun b ->
+  sync ~cap b >>= fun b ->
+  sync ~cap b >>= fun b ->
   Alcotest.(check counter) "counter: 5"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
@@ -1382,18 +1390,12 @@ let test_startup dk =
   Alcotest.(check status_state) "update status" `Failure status.Status.state;
 
   sync b >>= fun b ->
+  sync b >>= fun _b ->
   Alcotest.(check counter) "counter: 6"
     { events = 0; prs = 3; status = 6; refs = 3;
       set_pr = 0; set_status = 2; set_ref = 0 }
     gh.API.ctx;
 
-  (* changes done in the public branch are never overwritten
-     FIXME: we might want to improve/change this in the future. *)
-  sync b >>= fun _b ->
-  Alcotest.(check counter) "counter: 7"
-    { events = 0; prs = 3; status = 6; refs = 3;
-      set_pr = 0; set_status = 2; set_ref = 0 }
-    gh.API.ctx;
   let status_dir = dir / "status" / "foo" / "bar" / "baz" in
   expect_head branch >>*= fun h ->
   let tree = DK.Commit.tree h in

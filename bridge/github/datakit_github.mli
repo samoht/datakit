@@ -590,6 +590,9 @@ module State (API: API): sig
   val capabilities: token -> Capabilities.t
   (** [capabilities t] is the token [t]'s capabilities. *)
 
+  val with_capabilities: Capabilities.t -> token -> token
+  (** [with_capabilities c t] is [t] with the capabilities [c]. *)
+
   (** {1 Synchronisation} *)
 
   val import: token -> Snapshot.t -> Repo.Set.t -> Snapshot.t Lwt.t
