@@ -100,6 +100,9 @@ module PR: sig
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for pull-request values. *)
 
+  val compare: t -> t -> int
+  (** [compare] compares pull requests. *)
+
   type id = Repo.t * int
   (** The type for commit ids. *)
 
@@ -211,6 +214,9 @@ module Ref: sig
 
   val pp: t Fmt.t
   (** [pp] is the pretty-printer for references. *)
+
+  val compare: t -> t -> int
+  (** [compare] compares Git references. *)
 
   type id = Repo.t * string list
   (** The type for Git reference IDs. *)
