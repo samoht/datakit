@@ -558,9 +558,15 @@ module type API = sig
   val refs: token -> Repo.t -> Ref.t list result
   (** [refs t r] is the list of references for the the repo [r]. *)
 
-  val events: token -> Repo.t -> Event.t list result
-  (** [event t r] is the list of events attached to the repository
-      [r]. Note: can be slow/costly if multiple pages of events. *)
+  val iter_events: token -> Repo.t -> (Event.t -> unit) -> unit
+  (** [event t r f] applies [f] on every event in the repository
+      [r]. The GitHub API implements this function by polling the API,
+      taking account
+      {{:https://developer.github.com/v3/#rate-limiting}rate-limiting}
+      which {e can make up to 5,000 requests per hour. For
+      unauthenticated requests, the rate limit allows you to make up
+      to 60 requests per hour.}
+  *)
 
   module Webhook: sig
 

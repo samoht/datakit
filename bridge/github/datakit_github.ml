@@ -1064,7 +1064,7 @@ module type API = sig
   val set_pr: token -> PR.t -> unit result
   val prs: token -> Repo.t -> PR.t list result
   val refs: token -> Repo.t -> Ref.t list result
-  val events: token -> Repo.t -> Event.t list result
+  val iter_events: token -> Repo.t -> (Event.t -> unit) -> unit
   module Webhook: sig
     type t
     val create: token -> Uri.t -> t
