@@ -1,7 +1,9 @@
 APP=Datakit.app
 EXE=Datakit
 PINOPTS=-y -k git
+
 BUILD=jbuilder build --dev
+RUNTEST=jbuilder runtest
 
 .PHONY: all clean test bundle COMMIT exe ci
 
@@ -10,30 +12,30 @@ all:
 
 datakit:
 	$(BUILD) -n datakit
-	jbuilder runtest -n datakit
+	$(RUNTEST) test/datakit
 
 client:
-	$(BUILD) -n datakit-client
+	$(BUILD) -p datakit-client
 
 server:
-	$(BUILD) -n datakit-server
+	$(BUILD) -p datakit-server
 
 github:
-	$(BUILD) -n datakit-github -q
+	$(BUILD) -p datakit-github
 
 bridge-local-git:
-	$(BUILD) -n datakit-bridge-local-git
+	$(BUILD) -p datakit-bridge-local-git
 
 bridge-github:
-	$(BUILD) -n datakit-bridge-github
-	jbuilder runtest -n datakit-bridge-github
+	$(BUILD) -p datakit-bridge-github
+	$(RUNTEST) test/datakit-github-bridge
 
 ci:
-	$(BUILD) -n datakit-ci -q
-	jbuilder runtest -n datakit-ci
+	$(BUILD) -p datakit-ci -q
+	$(RUNTEST) ci/test
 
 clean:
-	jbuilder clean
+	rm -rf _build
 	rm -rf $(APP) $(EXE) _tests
 	rm -f examples/ocaml-client/*.native
 	rm -f ci/skeleton/exampleCI.native
@@ -72,7 +74,7 @@ PACKAGES=$(REPO)/packages
 
 # until we have https://github.com/ocaml/opam-publish/issues/38
 pkg-%:
-	topkg opam pkg -n $*
+	topkg opam pkg -p $*
 	mkdir -p $(PACKAGES)/$*
 	cp -r _build/$*.* $(PACKAGES)/$*/
 	cd $(PACKAGES) && git add $*
