@@ -1,0 +1,17 @@
+(jbuild_version 1)
+
+(executable
+ ((name        main)
+  (package     datakit-bridge-github)
+  (public_name datakit-bridge-github)
+  (libraries   (datakit-github datakit-server
+                github github-hooks.unix lwt.unix cohttp.lwt github.unix
+                fmt.cli fmt.tty
+                datakit_conduit prometheus-app.unix datakit_log))
+ ))
+
+; TODO: generate the right version using topkg watermarking
+(rule
+  ((targets (version.ml))
+   (deps    (../../src/version.ml))
+   (action  (copy ${<} ${@}))))
