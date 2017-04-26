@@ -17,11 +17,9 @@ RUN opam config exec -- ocaml /tmp/check-libev.ml
 # cache opam install of dependencies
 COPY datakit.opam /home/opam/src/datakit/datakit.opam
 COPY datakit-client.opam /home/opam/src/datakit/datakit-client.opam
-COPY datakit-server.opam /home/opam/src/datakit/datakit-server.opam
 COPY datakit-github.opam /home/opam/src/datakit/datakit-github.opam
 COPY datakit-bridge-github.opam /home/opam/src/datakit/datakit-bridge-github.opam
 RUN opam pin add datakit.dev /home/opam/src/datakit -yn && \
-    opam pin add datakit-server.dev /home/opam/src/datakit -yn && \
     opam pin add datakit-client.dev /home/opam/src/datakit -yn && \
     opam pin add datakit-github.dev /home/opam/src/datakit -yn && \
     opam pin add datakit-bridge-github.dev /home/opam/src/datakit -yn
